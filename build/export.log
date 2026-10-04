@@ -1,0 +1,21 @@
+[OK] mov_prores  frames=  45   0.1s    364.9KB
+     codec_name=prores width=480 height=60 pix_fmt=yuva444p12le duration=1.500000 nb_frames=45
+     alpha 全透= 50.0% 半透= 48.8% 不透=  1.2% min=0 max=255
+[OK] mov_qtrle   frames=  45   0.1s    163.8KB
+     codec_name=qtrle width=480 height=60 pix_fmt=argb duration=1.500000 nb_frames=45
+     alpha 全透= 50.0% 半透= 48.8% 不透=  1.2% min=0 max=255
+[OK] webm_vp9    frames=  45   0.3s     16.3KB
+     codec_name=vp9 width=480 height=60 pix_fmt=yuv420p duration=N/A nb_frames=N/A
+     alpha 全透= 44.9% 半透= 53.9% 不透=  1.1% min=0 max=255
+[OK] webm_vp8    frames=  45   0.2s     44.1KB
+     codec_name=vp8 width=480 height=60 pix_fmt=yuv420p duration=N/A nb_frames=N/A
+     alpha 全透= 48.1% 半透= 50.8% 不透=  1.1% min=0 max=255
+[OK] png_seq     frames=  45   0.1s    182.9KB  files=45
+     codec_name=png width=480 height=60 pix_fmt=rgba duration=N/A nb_frames=N/A
+     alpha 全透= 49.1% 半透= 49.5% 不透=  1.4% min=0 max=255
+[OK] mp4_black   frames=  45   0.1s     10.1KB
+     codec_name=h264 width=480 height=60 pix_fmt=yuv420p duration=1.500000 nb_frames=45
+     alpha 全透=  0.0% 半透=  0.0% 不透=100.0% min=255 max=255
+[OK] 整帧画布 frames=15 codec_name=qtrle width=640 height=360 pix_fmt=argb duration=0.500000 nb_frames=15
+     alpha 行分布: 上=0 中=255 下=0（期望 上=0 中>0 下=0）
+ALL OK

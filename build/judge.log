@@ -1,0 +1,8 @@
+wrote C:\Users\x1927\Desktop\fh\build\judge_sequence.png 1200 990
+  ok  dt=-260 判定点中心是亮色菱形  [RGB=(np.int64(240), np.int64(237), np.int64(233))]
+  ok  dt=-140 判定点中心是亮色菱形  [RGB=(np.int64(240), np.int64(237), np.int64(233))]
+  ok  dt=+400 判定点中心是亮色菱形  [RGB=(np.int64(240), np.int64(237), np.int64(233))]
+  ok  dt=+600 判定点中心是亮色菱形  [RGB=(np.int64(240), np.int64(237), np.int64(233))]
+  ok  菱形内部几乎无暗色空洞  [暗色占比=0.00]
+
+判定菱形检查通过
