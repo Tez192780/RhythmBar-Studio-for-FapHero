@@ -17,7 +17,7 @@ if errorlevel 1 (
 python -c "import PySide6" >nul 2>nul
 if errorlevel 1 (
   echo   首次运行，正在安装依赖 PySide6（约 100MB，只需一次）...
-  python -m pip install -r requirements.txt
+  python -X utf8 -m pip install -r requirements.txt
   if errorlevel 1 (
     echo   依赖安装失败，请检查网络后重试，或手动执行：python -m pip install -r requirements.txt
     pause
@@ -25,11 +25,11 @@ if errorlevel 1 (
   )
 )
 
-rem 无控制台窗口启动；出错信息会写到 %TEMP%\rhythmbar.log
+rem 无控制台窗口启动（报错信息会写到 %TEMP%\rhythmbar.log）
 where pythonw >nul 2>nul
 if errorlevel 1 (
-  start "" /min python "%~dp0main.py" %*
+  start "" /min python -X utf8 "%~dp0main.py" %*
 ) else (
-  start "" pythonw "%~dp0main.py" %*
+  start "" pythonw -X utf8 "%~dp0main.py" %*
 )
 exit /b 0

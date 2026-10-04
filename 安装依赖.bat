@@ -2,7 +2,7 @@
 chcp 65001 >nul
 cd /d "%~dp0"
 echo 安装 / 更新依赖...
-python -m pip install -r requirements.txt
+python -X utf8 -m pip install -r requirements.txt
 echo.
 echo 检查 ffmpeg...
 where ffmpeg >nul 2>nul

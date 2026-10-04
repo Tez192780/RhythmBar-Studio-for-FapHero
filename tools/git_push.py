@@ -20,6 +20,13 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
+# 控制台/重定向都用 UTF-8，免得中文变成乱码
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 
 def git(*args: str, check: bool = False) -> tuple[int, str]:
     """跑一条 git 命令，返回 (退出码, 输出)。"""
