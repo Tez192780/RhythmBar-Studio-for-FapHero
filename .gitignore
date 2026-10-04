@@ -1,0 +1,22 @@
+# 自检/开发产物（本地保留，不进仓库）
+build/
+dist/
+*.egg-info/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# 工程/自动保存（属于个人数据，不进仓库）
+*.rbarproj
+*.rbarproj.autosave*
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+*.log

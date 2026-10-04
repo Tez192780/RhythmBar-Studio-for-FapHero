@@ -1,0 +1,18 @@
+# Windows 批处理必须是 CRLF，否则个别 cmd 解析会出错
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 源码与文档统一 LF
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+
+# 二进制
+*.png binary
+*.ico binary
+*.mov binary
+*.mp4 binary
+*.webm binary
+*.wav binary

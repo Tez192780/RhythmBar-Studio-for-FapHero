@@ -1,14 +1,0 @@
-���x (240000, 2) sr=48000 �\<Ppe=30000 (u�e 0.01s
-  ok  �e�H"5000ms  [5000]
-  ok  ۏeQ�d>e�r`
-  � R/T�R: processed=0ms elapsed=20ms state=State.ActiveState bytes_read=208384/960000 free=0 buffer=11520
-  � 400ms: processed=457ms elapsed=422ms state=State.ActiveState bytes_read=306688/960000 free=0 buffer=11520
-  � 900ms: processed=957ms elapsed=922ms state=State.ActiveState bytes_read=388608/960000 free=0 buffer=11520
-  � �d>e 1.5s TMOn = 2487 ms�w��p 1000	�
-  ok  MOn���d>e�cۏ  [2487]
-  ok  MOnNǏ�Q  [2487]
-  ok  �f\PT�N(W 1000ms+  [2487]
- FAIL �S�T�e��RP  [5000]
-  ok  �d0R�~>\ꁨR\Pbk  [playing=True pos=4940]
-
-1Y%�y�� ['�S�T�e��RP']
