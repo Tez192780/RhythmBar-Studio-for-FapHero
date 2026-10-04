@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..i18n import translate_tree
 from .panels import FloatSlider
 
 
@@ -99,6 +100,7 @@ class TapTempoDialog(QDialog):
         box.rejected.connect(self.reject)
         lay.addWidget(box)
         self.big.setFocus()
+        translate_tree(self)
 
     def _tap(self) -> None:
         import time
@@ -252,6 +254,7 @@ class FillRangeDialog(QDialog):
             self.sp_ms.setValue(float(getattr(state, "fill_ms", 125.0)))
             self.chk_alt.setChecked(bool(getattr(state, "fill_alt", False)))
         self._sync_range()
+        translate_tree(self)
 
     # ------------------------------------------------------------ 区间
     def _sync_range(self, *_) -> None:
@@ -423,6 +426,7 @@ class AutoNotesDialog(QDialog):
         self.box.rejected.connect(self.reject)
         lay.addWidget(self.box)
         self._sync()
+        translate_tree(self)
 
     def _sync(self, *_) -> None:
         video = self.cb_source.currentData() == "video"

@@ -8,6 +8,7 @@ from PySide6.QtGui import QBrush, QColor, QImage, QLinearGradient, QPainter, QPe
 from PySide6.QtWidgets import QWidget
 
 from ..doc import Doc
+from ..i18n import tr
 from ..render import BarRenderer
 
 
@@ -89,9 +90,9 @@ class PreviewWidget(QWidget):
             p.drawRect(r)
             p.setPen(QColor("#5b6470"))
             p.drawText(QRectF(r.left(), r.bottom() + 2, r.width(), 20), Qt.AlignLeft | Qt.AlignVCenter,
-                       f"预览 {rs.width}×{rs.height}  ·  "
-                       f"{ {'rtl': '右→左', 'ltr': '左→右', 'converge': '双侧汇聚'}.get(rs.flow, rs.flow) }"
-                       f"  ·  流速 {rs.approach_s:g}s")
+                       f"{tr('预览')} {rs.width}×{rs.height}  ·  "
+                       f"{tr({'rtl': '右→左', 'ltr': '左→右', 'converge': '双侧汇聚'}.get(rs.flow, rs.flow))}"
+                       f"  ·  {tr('流速')} {rs.approach_s:g}s")
         p.end()
         dt = _t.perf_counter() - t0
         self._paint_times.append(dt)
@@ -189,7 +190,7 @@ class SpectrumWidget(QWidget):
         w, h = self.width(), self.height()
         if self.samples is None:
             p.setPen(QColor("#4a5560"))
-            p.drawText(self.rect(), Qt.AlignCenter, "实时频谱（载入音频后显示）")
+            p.drawText(self.rect(), Qt.AlignCenter, tr("实时频谱（载入音频后显示）"))
             p.end()
             return
         bw = w / self.BARS
@@ -318,7 +319,7 @@ class RefFrameWidget(QWidget):
         area = QRectF(4, 18, max(1.0, self.width() - 8), max(1.0, self.height() - 34))
         p.setPen(QColor("#5b6470"))
         p.drawText(QRectF(6, 2, self.width() - 12, 14), Qt.AlignLeft | Qt.AlignVCenter,
-                   "参考视频" + ("（取帧中…）" if self._busy else ""))
+                   tr("参考视频") + (tr("（取帧中…）") if self._busy else ""))
         img = None
         key = int(self.t_ms // 40)
         clip, fs, src_ms = self._active()
@@ -328,7 +329,7 @@ class RefFrameWidget(QWidget):
             img = fs.image(fs.index_at(src_ms))
         if img is None or img.isNull():
             p.setPen(QColor("#4a5560"))
-            p.drawText(area, Qt.AlignCenter, "没有参考视频\n文件 → 导入音视频")
+            p.drawText(area, Qt.AlignCenter, tr("没有参考视频\n文件 → 导入音视频"))
         else:
             iw, ih = img.width(), img.height()
             k = min(area.width() / max(1, iw), area.height() / max(1, ih))

@@ -19,6 +19,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QMenu, QWidget
 
 from ..doc import Doc
+from ..i18n import tr
 from ..model import Note
 
 GUTTER = 108
@@ -462,7 +463,7 @@ class TimelineWidget(QWidget):
             txt = f"{int(f)}" if f < 1000 else f"{f / 1000:g}k"
             p.drawText(QRectF(6, yy - 7, GUTTER - 12, 14), Qt.AlignRight | Qt.AlignVCenter, txt)
         p.setPen(QColor("#5c6672"))
-        p.drawText(QRectF(6, y0 - 13, GUTTER - 12, 12), Qt.AlignRight | Qt.AlignTop, "Hz")
+        p.drawText(QRectF(6, y0 - 13, GUTTER - 12, 12), Qt.AlignRight | Qt.AlignTop, tr("Hz"))
 
     # -- 媒体片段条（音频块 + 视频块内嵌胶片条）
     def _draw_media(self, p: QPainter, w: int) -> None:
@@ -571,7 +572,7 @@ class TimelineWidget(QWidget):
                 p.setPen(QColor("#4a5560"))
                 p.setFont(self._small)
                 p.drawText(QRectF(GUTTER + 12, y0, w - GUTTER - 20, hh), Qt.AlignCenter,
-                           "未加载音频 —— 把 mp3 / wav / flac 拖进窗口，或点工具栏「打开音频」")
+                           tr("未加载音频 —— 把 mp3 / wav / flac 拖进窗口，或点工具栏「打开音频」"))
             return
         x0, x1 = self._xrange(w)
         x0 = max(GUTTER, x0)

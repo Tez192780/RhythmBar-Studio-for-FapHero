@@ -10,6 +10,7 @@ from PySide6.QtGui import QColor, QIcon, QPalette
 from PySide6.QtWidgets import QApplication
 
 from . import APP_NAME, APP_NAME_EN
+from . import i18n
 from .settings import AppSettings
 
 QSS = """
@@ -106,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
     from .ui.mainwindow import MainWindow
 
     settings = AppSettings()
+    i18n.set_language(settings.language)
     win = MainWindow(settings)
     geo = settings.geometry
     if geo:

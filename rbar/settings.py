@@ -21,6 +21,7 @@ class AppSettings:
         self.volume: float = float(g("volume", 0.85) or 0.85)
         self.rate: float = float(g("rate", 1.0) or 1.0)
         self.tap_min_ms: float = float(g("tap_min_ms", 90.0) or 90.0)
+        self.language: str = str(g("language", "zh") or "zh")
         self.last_dir: str = str(g("last_dir", os.path.expanduser("~")) or "")
         recent = g("recent", [])
         if isinstance(recent, str):
@@ -37,6 +38,7 @@ class AppSettings:
         s.setValue("volume", self.volume)
         s.setValue("rate", self.rate)
         s.setValue("tap_min_ms", self.tap_min_ms)
+        s.setValue("language", self.language)
         s.setValue("last_dir", self.last_dir)
         s.setValue("recent", self.recent[:12])
         s.setValue("show_safe", "true" if self.show_safe else "false")

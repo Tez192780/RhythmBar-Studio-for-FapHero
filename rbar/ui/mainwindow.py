@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import APP_NAME, __version__
+from .. import i18n
 from ..audio import AudioEngine, decode_audio, detect_onsets, estimate_bpm, estimate_offset, peaks
 from ..demo import make_demo_project
 from ..doc import Doc
@@ -102,7 +103,8 @@ class MainWindow(QMainWindow):
 
         self.settings_changed()
         self.refresh_all()
-        self.statusBar().showMessage("就绪：拖入音频 → 打点 → 导出透明视频", 8000)
+        i18n.translate_tree(self)          # 按当前语言刷新整套界面
+        self.statusBar().showMessage(i18n.tr("就绪：拖入音频 → 打点 → 导出透明视频"), 8000)
         if self.doc.project.path:
             self.setWindowTitle(f"{APP_NAME} — {os.path.basename(self.doc.project.path)}")
 
@@ -338,6 +340,21 @@ class MainWindow(QMainWindow):
         m_help.addAction(act("快捷键与用法", self.show_help))
         m_help.addAction(act("关于", self.show_about))
 
+        # 语言（三个选项互斥）
+        m_lang = self.menuBar().addMenu("语言")
+        grp_lang = QActionGroup(self)
+        grp_lang.setExclusive(True)
+        self.lang_actions: dict[str, QAction] = {}
+        for code, label in i18n.LANGS:
+            a = QAction(label, self)
+            a.setCheckable(True)
+            a.setChecked(i18n.current_language() == code)
+            a.triggered.connect(lambda _=False, c=code: self.set_language(c))
+            grp_lang.addAction(a)
+            m_lang.addAction(a)
+            self.lang_actions[code] = a
+        self.menu_lang = m_lang
+
         # 工具栏按钮
         tb.addAction(a_audio)
         tb.addAction(a_video)
@@ -420,7 +437,8 @@ class MainWindow(QMainWindow):
     def _update_counts(self) -> None:
         n = len(self.doc.project.chart)
         s = len(self.doc.selection)
-        self.lbl_count.setText(f"音符 {n}" + (f"  选中 {s}" if s else ""))
+        self.lbl_count.setText(i18n.trf("音符 {n}", n=n)
+                               + (i18n.trf("  选中 {n}", n=s) if s else ""))
         self._update_title()
 
     def _update_title(self) -> None:
@@ -523,8 +541,24 @@ class MainWindow(QMainWindow):
         self._update_playhead(ms, force=True)
 
     def _on_play_state(self, playing: bool) -> None:
-        self.btn_play.setText("⏸  暂停" if playing else "▶  播放")
+        self.btn_play.setText(i18n.tr("⏸  暂停") if playing else i18n.tr("▶  播放"))
         self.timeline.set_position(self.position_ms, playing)
+
+    # ============================================================ 界面语言
+    def set_language(self, code: str) -> None:
+        i18n.set_language(code)
+        self.settings.language = code
+        self.settings.save()
+        for c, a in self.lang_actions.items():
+            a.setChecked(c == code)
+        i18n.translate_tree(self)          # 控件原文都记在 _zh 属性里，直接重译
+        self._on_play_state(self.engine.playing or self._virtual_active)
+        self.refresh_all()
+        self.timeline.update()
+        self.preview.update()
+        self.statusBar().showMessage(
+            {"zh": "界面语言：中文", "ja": "表示言語：日本語", "en": "UI language: English"}[code],
+            5000)
 
     def _on_slider_moved(self, v: int) -> None:
         if self.engine.duration_ms <= 0:
@@ -882,7 +916,7 @@ class MainWindow(QMainWindow):
             self.lbl_pos.setText(fmt_time(pos))
             tm = self.doc.project.chart.timemap
             b = tm.beat(pos)
-            self.lbl_beat.setText(f"拍 {b:.2f}（第 {int(b // 1) + 1} 拍）")
+            self.lbl_beat.setText(i18n.trf("拍 {b:.2f}（第 {n} 拍）", b=b, n=int(b // 1) + 1))
             self.lbl_bpm.setText(f"{tm.bpm_at(pos):g} BPM")
             dur = self.engine.duration_ms
             if dur > 0 and not self._dragging_pos:
@@ -893,8 +927,8 @@ class MainWindow(QMainWindow):
             self.update()
         if now - self._fps_t > 0.5:
             self._fps_t = now
-            self.lbl_fps.setText(
-                f"界面 {self.timeline.fps():.0f}/{self.preview.fps():.0f} fps")
+            self.lbl_fps.setText(i18n.trf("界面 {a:.0f}/{b:.0f} fps",
+                                          a=self.timeline.fps(), b=self.preview.fps()))
 
     # ================================================================ 音频
     def open_audio(self) -> None:
