@@ -104,6 +104,7 @@ class TimelineWidget(QWidget):
         self._playing = False
         self._film = None
         self._spec = None
+        self._xr: tuple[float, float] | None = None      # 增量补画时的像素范围
         self._hover: Note | None = None
         self._hover_bpm = -1
         self._mode = ""
@@ -124,6 +125,7 @@ class TimelineWidget(QWidget):
         self._fps_times: list[float] = []
         # 背景缓存
         self._bg: QPixmap | None = None
+        self._bg_alt: QPixmap | None = None
         self._bg_t0 = 0.0
         self._bg_meta: tuple | None = None
         self._rev = 0            # 内容版本号，变了就丢弃缓存
@@ -334,21 +336,64 @@ class TimelineWidget(QWidget):
             id(self._spec) if self._spec is not None else 0, st.show_spectrum,
         )
 
+    def _bg_buffer(self, pw: int, h: int) -> QPixmap:
+        """双缓冲：重画时复用旧的那块，避免每 1.4 秒新分配 5MB 位图（那本身就要 5~20ms）。"""
+        for attr in ("_bg_alt", "_bg"):
+            pm = getattr(self, attr, None)
+            if pm is not None and pm.width() == pw and pm.height() == h:
+                return pm
+        return QPixmap(pw, h)
+
     def _ensure_bg(self, w: int, h: int) -> None:
-        """需要时重画背景缓存（比控件宽 BG_MARGIN，滚动时平移复用）。"""
+        """背景缓存：比控件宽 BG_MARGIN，滚动时平移复用。
+
+        滚过 BG_MARGIN 之后**不再整块重画**（放大编辑时那是每 1.6 秒一次的
+        15~33ms 卡顿，正是「隔几秒一小卡」），改成：
+        把旧图左移，只重画右侧新露出来的那一条。
+        """
         st = self.doc.state
         sig = self._bg_sig()
+        pw = w + self.BG_MARGIN
         if self._bg is not None and self._bg_meta == sig:
             dx = (self._bg_t0 - st.view_t0) * st.px_per_ms
             if -self.BG_MARGIN + 1 <= dx <= 0.5:
-                return
-        pw = w + self.BG_MARGIN
-        pm = QPixmap(pw, h)
+                return                                  # 直接复用
+            if dx < -self.BG_MARGIN + 1:
+                # 平移复用：只补画右侧露出的一条
+                shift = int(min(self.BG_MARGIN, -dx))
+                if 0 < shift < pw - GUTTER:
+                    pm = self._bg_buffer(pw, h)
+                    p = QPainter(pm)
+                    p.setRenderHint(QPainter.Antialiasing, False)
+                    p.drawPixmap(0, 0, self._bg, shift, 0, pw - shift, h)
+                    self._bg_t0 = st.view_t0             # 平移后 dx = 0
+                    self._bg_alt = self._bg              # 旧的留作下次缓冲
+                    self._bg = pm
+                    self._xr = (float(pw - shift), float(pw))
+                    p.setClipRect(QRectF(pw - shift, 0, shift, h))
+                    self._render_bg_layers(p, pw, h)
+                    self._xr = None
+                    p.end()
+                    self._bg_meta = sig
+                    return
+        # 全量重画
+        pm = self._bg_buffer(pw, h)
         pm.fill(BG)
         p = QPainter(pm)
         p.setRenderHint(QPainter.Antialiasing, False)
         self._bg_t0 = st.view_t0
         self._bg_meta = sig
+        self._xr = None
+        self._render_bg_layers(p, pw, h)
+        p.end()
+        if self._bg is not pm:
+            self._bg_alt = self._bg
+        self._bg = pm
+
+    def _render_bg_layers(self, p: QPainter, pw: int, h: int) -> None:
+        """画静态层；_xr 非空时表示只画那一段像素（增量补画）。"""
+        st = self.doc.state
+        x0, x1 = self._xrange(pw)
         self._draw_rows(p, pw, h)
         if self._film is not None and st.show_video:
             self._draw_film(p, pw)
@@ -359,11 +404,16 @@ class TimelineWidget(QWidget):
         self._draw_grid(p, pw, h)
         self._draw_bpm_lane(p, pw)
         self._draw_ruler(p, pw)
-        self._draw_gutter(p, h)
+        if x0 <= GUTTER:                    # 左侧标题栏只在全量重画时更新
+            self._draw_gutter(p, h)
         if self._spec_on():
             self._draw_spec_labels(p, pw)
-        p.end()
-        self._bg = pm
+
+    def _xrange(self, w: float) -> tuple[float, float]:
+        """当前要画的像素范围（增量补画时只有一条，其余是全宽）。"""
+        if self._xr is None:
+            return (0.0, float(w))
+        return self._xr
 
     # -- 频谱图（对音主力）
     def _draw_spectrum(self, p: QPainter, w: int) -> None:
@@ -376,13 +426,17 @@ class TimelineWidget(QWidget):
             return
         p.fillRect(QRectF(0, y0, w, hh), QColor("#070910"))
         img = sp.image()
-        t0, t1 = self.x_to_ms(GUTTER), self.x_to_ms(w)
+        sx0, sx1 = self._xrange(w)
+        sx0 = max(GUTTER, sx0)
+        if sx1 - sx0 < 1:
+            return
+        t0, t1 = self.x_to_ms(sx0), self.x_to_ms(sx1)
         c0 = max(0.0, t0 / sp.frame_ms)
         c1 = min(float(sp.frames), t1 / sp.frame_ms)
         if c1 - c0 < 0.5:
             return
-        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
-        p.drawImage(QRectF(GUTTER, y0, max(1.0, w - GUTTER), hh), img,
+        p.setRenderHint(QPainter.SmoothPixmapTransform, False)   # 频谱不需要插值，快很多
+        p.drawImage(QRectF(sx0, y0, sx1 - sx0, hh), img,
                     QRectF(c0, 0.0, c1 - c0, float(sp.bins)))
         p.setRenderHint(QPainter.SmoothPixmapTransform, False)
 
@@ -418,7 +472,8 @@ class TimelineWidget(QWidget):
             return
         p.fillRect(QRectF(0, y0, w, hh), QColor("#0d1013"))
         p.setRenderHint(QPainter.SmoothPixmapTransform, True)
-        t0, t1 = self.x_to_ms(GUTTER), self.x_to_ms(w)
+        fx0, fx1 = self._xrange(w)
+        t0, t1 = self.x_to_ms(max(GUTTER, fx0)), self.x_to_ms(fx1)
         i0 = max(0, fs.index_at(t0) - 1)
         i1 = min(fs.count - 1, fs.index_at(t1) + 1)
         sw, sh = fs.thumb_w, fs.thumb_h
@@ -453,16 +508,20 @@ class TimelineWidget(QWidget):
         rows = self.rows()
         top = self._rows_top()
         rh = self._row_h()
+        rx0, rx1 = self._xrange(w)
+        rw = max(1.0, rx1 - rx0)
         for i, key in enumerate(rows):
             y = self.row_y(i)
             active = i == self.doc.state.current_lane
-            p.fillRect(QRectF(0, y, w, rh), BG_ROW_ACTIVE if active else (BG_ROW if i % 2 == 0 else BG_ROW_ALT))
+            p.fillRect(QRectF(rx0, y, rw, rh),
+                       BG_ROW_ACTIVE if active else (BG_ROW if i % 2 == 0 else BG_ROW_ALT))
             st = self.doc.project.theme.style(key)
-            p.fillRect(QRectF(0, y, 3, rh), QColor(st.color))
+            if rx0 <= 3:                        # 左侧类型色条只在全量时画
+                p.fillRect(QRectF(0, y, 3, rh), QColor(st.color))
             p.setPen(QPen(QColor("#2b3037")))
-            p.drawLine(QPointF(0, y + rh), QPointF(w, y + rh))
+            p.drawLine(QPointF(rx0, y + rh), QPointF(rx1, y + rh))
         bottom = top + len(rows) * rh
-        p.fillRect(QRectF(0, bottom, w, max(0.0, h - bottom)), QColor("#15171b"))
+        p.fillRect(QRectF(rx0, bottom, rw, max(0.0, h - bottom)), QColor("#15171b"))
 
     # -- 波形（在音符行下面，占满剩余空间）
     def _draw_wave(self, p: QPainter, w: int) -> None:
@@ -472,13 +531,16 @@ class TimelineWidget(QWidget):
         p.setPen(QPen(QColor("#262c34")))
         p.drawLine(QPointF(0, y0), QPointF(w, y0))
         if self._peaks is None or self._dur_ms <= 0:
-            p.setPen(QColor("#4a5560"))
-            p.setFont(self._small)
-            p.drawText(QRectF(GUTTER + 12, y0, w - GUTTER - 20, hh), Qt.AlignCenter,
-                       "未加载音频 —— 把 mp3 / wav / flac 拖进窗口，或点工具栏「打开音频」")
+            if self._xr is None:
+                p.setPen(QColor("#4a5560"))
+                p.setFont(self._small)
+                p.drawText(QRectF(GUTTER + 12, y0, w - GUTTER - 20, hh), Qt.AlignCenter,
+                           "未加载音频 —— 把 mp3 / wav / flac 拖进窗口，或点工具栏「打开音频」")
             return
-        x0 = max(GUTTER, 0.0)
-        x1 = float(w)
+        x0, x1 = self._xrange(w)
+        x0 = max(GUTTER, x0)
+        if x1 - x0 < 2:
+            return
         cols = int(x1 - x0)
         if cols <= 2:
             return
@@ -509,7 +571,8 @@ class TimelineWidget(QWidget):
     def _draw_grid(self, p: QPainter, w: int, h: int) -> None:
         st = self.doc.state
         tm = self.doc.project.chart.timemap
-        t0, t1 = self.x_to_ms(GUTTER), self.x_to_ms(w)
+        gx0, gx1 = self._xrange(w)
+        t0, t1 = self.x_to_ms(max(GUTTER, gx0)), self.x_to_ms(gx1)
         top = BPM_H + RULER_H
         respace = tm.ms(tm.beat(t0) + 1.0) - tm.ms(tm.beat(t0)) if st.px_per_ms else 0.0
         beat_px = max(1e-6, respace * st.px_per_ms)
@@ -748,7 +811,8 @@ class TimelineWidget(QWidget):
             if s * st.px_per_ms >= 62:
                 step = s
                 break
-        t0, t1 = self.x_to_ms(GUTTER), self.x_to_ms(w)
+        rx0, rx1 = self._xrange(w)
+        t0, t1 = self.x_to_ms(max(GUTTER, rx0)), self.x_to_ms(rx1)
         p.setFont(self._ruler_font)
         start = math.floor(t0 / step) * step
         t = start

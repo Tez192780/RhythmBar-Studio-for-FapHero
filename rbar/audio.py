@@ -7,12 +7,13 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from typing import Callable
 
 import numpy as np
-from PySide6.QtCore import QIODevice, QObject, QTimer, Signal
+from PySide6.QtCore import QIODevice, QObject, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QImage
-from PySide6.QtMultimedia import QAudioFormat, QAudioSink, QMediaDevices
+from PySide6.QtMultimedia import QAudio, QAudioFormat, QAudioSink, QMediaDevices
 
 DEFAULT_SR = 48000
 
@@ -403,10 +404,18 @@ class _PCMDevice(QIODevice):
 
 
 class AudioEngine(QObject):
-    """音频播放：位置精确、可变速、可加节拍器、可校准延迟。"""
+    """音频播放：位置精确、可变速、可加节拍器、可校准延迟。
+
+    真正的 QAudioSink 跑在独立线程（_PlaybackWorker）里 —— Windows 音频后端
+    会周期性占用「创建 sink 的那条线程」，留在主线程会让界面每隔几秒卡一下。
+    """
 
     stateChanged = Signal(bool)     # 是否正在播放
     finished = Signal()
+    # 投给 worker 线程的命令（跨线程自动排队）
+    _cmdPlay = Signal(object, float, float, float, int, float)
+    _cmdStop = Signal()
+    _cmdVolume = Signal(float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -415,20 +424,33 @@ class AudioEngine(QObject):
         self.path = ""
         self.duration_ms = 0.0
         self._pcm = np.zeros((0, 2), dtype=np.int16)   # 预渲染（含变速/节拍器）
-        self._device: _PCMDevice | None = None
-        self._sink: QAudioSink | None = None
         self._rate = 1.0
         self._metronome = False
         self._beats_ms: list[float] = []
         self._volume = 0.85
         self._playing = False
         self._seek_ms = 0.0
-        self._start_us = 0.0
         self._latency_ms = 0.0
-        self._auto_latency_ms = 0.0
-        self._timer = QTimer(self)
-        self._timer.setInterval(50)
-        self._timer.timeout.connect(self._tick)
+        self._pos_at = 0.0
+        self._pos_clock = 0.0
+
+        # ---- 播放放到独立线程：Windows 音频后端会占用「创建 sink 的那条线程」，
+        #      放在主线程里界面每隔几秒就会卡一下（实测 30~180ms）。
+        self._thread = QThread(self)
+        self._worker = _PlaybackWorker()
+        self._worker.moveToThread(self._thread)
+        self._thread.start()
+        self._cmdPlay.connect(self._worker.start_play)
+        self._cmdStop.connect(self._worker.stop_play)
+        self._cmdVolume.connect(self._worker.set_volume)
+        self._worker.tick.connect(self._on_worker_tick)
+        self._worker.stateChanged.connect(self._on_worker_state)
+        self._worker.finished.connect(self._on_worker_finished)
+
+    @property
+    def underruns(self) -> int:
+        """音频欠载次数（worker 线程统计，只读）。"""
+        return getattr(self._worker, "underruns", 0)
 
     # ------------------------------------------------------------- 载入
     def load(self, path: str, ffmpeg: str = "") -> None:
@@ -524,8 +546,7 @@ class AudioEngine(QObject):
 
     def set_volume(self, v: float) -> None:
         self._volume = max(0.0, min(1.0, float(v)))
-        if self._sink is not None:
-            self._sink.setVolume(self._volume)
+        self._cmdVolume.emit(self._volume)
 
     def set_latency_ms(self, ms: float) -> None:
         self._latency_ms = float(ms)
@@ -535,67 +556,42 @@ class AudioEngine(QObject):
     def playing(self) -> bool:
         return self._playing
 
-    def _ensure_sink(self) -> QAudioSink:
-        dev = QMediaDevices.defaultAudioOutput()
-        if dev is None or dev.isNull():
-            raise RuntimeError("没有可用的音频输出设备")
-        fmt = QAudioFormat()
-        fmt.setSampleRate(self.sr)
-        fmt.setChannelCount(2)
-        fmt.setSampleFormat(QAudioFormat.Int16)
-        sink = QAudioSink(dev, fmt, self)
-        bytes_per_sec = self.sr * 4
-        # 100ms 缓冲：窗口偶尔卡一下也不会让声卡饿死；缓冲带来的延迟由下面自动补偿
-        buf_bytes = int(bytes_per_sec * 0.10)
-        sink.setBufferSize(buf_bytes)
-        sink.setVolume(self._volume)
-        # 输出缓冲本身带来的固定延迟，自动补偿掉，用户校准值再叠加
-        self._auto_latency_ms = buf_bytes / bytes_per_sec * 1000.0
-        return sink
-
     def play(self, start_ms: float | None = None) -> None:
+        """开始播放。
+
+        真正持有 QAudioSink 的是一根独立线程里的 worker ——
+        Windows 音频后端会周期性占用「创建它的那条线程」，放在主线程里
+        界面每隔几秒就会被它顶一下（实测 30~180ms），所以必须挪出去。
+        """
         if self._pcm.shape[0] == 0:
             return
         if start_ms is not None:
             self._seek_ms = max(0.0, min(self.duration_ms, float(start_ms)))
-        self.stop(emit=False)
-        self._device = _PCMDevice(self._pcm, self)
-        pos_ms = self._seek_ms
-        byte = int(pos_ms / 1000.0 * (self.sr / max(0.01, self._rate)) * 4)
-        byte -= byte % 4
-        self._device.set_pos(byte)
-        self._device.open(QIODevice.ReadOnly)
-        self._sink = self._ensure_sink()
-        self._sink.start(self._device)
         self._playing = True
-        self._timer.start()
+        self._pos_at = self._seek_ms
+        self._pos_clock = time.perf_counter()
+        self._cmdPlay.emit(self._pcm, float(self._seek_ms), float(self._rate),
+                            float(self.duration_ms), int(self.sr), float(self._volume))
         self.stateChanged.emit(True)
 
     def pause(self) -> None:
         if not self._playing:
             return
         self._seek_ms = self.position_ms()
-        self.stop()
+        self._stop_playback(emit=True)
 
     def stop(self, emit: bool = True) -> None:
-        was = self._playing
+        if not self._playing:
+            if emit:
+                pass
+            return
+        self._seek_ms = self.position_ms()
+        self._stop_playback(emit=emit)
+
+    def _stop_playback(self, emit: bool) -> None:
         self._playing = False
-        self._timer.stop()
-        if self._sink is not None:
-            try:
-                self._sink.stop()
-            except Exception:
-                pass
-            self._sink.deleteLater()
-            self._sink = None
-        if self._device is not None:
-            try:
-                self._device.close()
-            except Exception:
-                pass
-            self._device.deleteLater()
-            self._device = None
-        if was and emit:
+        self._cmdStop.emit()
+        if emit:
             self.stateChanged.emit(False)
 
     def seek(self, ms: float) -> None:
@@ -606,25 +602,198 @@ class AudioEngine(QObject):
             self._seek_ms = ms
 
     def position_ms(self) -> float:
-        if not self._playing or self._sink is None:
+        """主线程自己推算位置（不跨线程问 sink），worker 每次 tick 再校准一次。"""
+        if not self._playing:
             return self._seek_ms
-        elapsed_ms = self._sink.processedUSecs() / 1000.0 - self._auto_latency_ms - self._latency_ms
-        pos = self._seek_ms + max(0.0, elapsed_ms) * self._rate
+        pos = self._pos_at + (time.perf_counter() - self._pos_clock) * 1000.0 * self._rate
         if pos >= self.duration_ms:
             return self.duration_ms
-        return pos
+        return max(0.0, pos)
 
-    def _tick(self) -> None:
-        if self._playing and self.position_ms() >= self.duration_ms - 1:
-            self._seek_ms = self.duration_ms
-            self.stop()
-            self.finished.emit()
+    # ------------------------------------------------------- worker 回调
+    def _on_worker_tick(self, pos_ms: float, clock: float) -> None:
+        self._pos_at = float(pos_ms)
+        self._pos_clock = float(clock)
 
-    def make_click(self, accented: bool = False) -> None:
-        """预览节拍器点击（不改工程数据）。"""
+    def _on_worker_state(self, playing: bool) -> None:
+        if not playing and self._playing:
+            self._playing = False
+            self.stateChanged.emit(False)
+
+    def _on_worker_finished(self) -> None:
+        self._seek_ms = self.duration_ms
+        self._playing = False
+        self.stateChanged.emit(False)
+        self.finished.emit()
+
+    def shutdown(self) -> None:
+        """退出程序时收线程。"""
         try:
-            import winsound
-
-            winsound.Beep(1500 if accented else 1000, 28)
+            self._cmdStop.emit()
         except Exception:
             pass
+        self._thread.quit()
+        self._thread.wait(1500)
+
+
+def _sink_is_idle(sink) -> bool:
+    """判断 QAudioSink 是否处于 Idle。
+
+    坑：PySide6 6.11 里 `QAudio.State` 与 `QtAudio.State` 是两个**不同的枚举类**，
+    值一样但 `QAudio.State.IdleState == sink.state()` 永远为 False
+    （QAudioSink.state() 返回的是 QtAudio.State）。所以按枚举名比较。
+    """
+    try:
+        st = sink.state()
+    except Exception:
+        return False
+    name = getattr(st, "name", None)
+    if name is not None:
+        return name == "IdleState"
+    return str(st).endswith("IdleState")
+
+
+class _PlaybackWorker(QObject):
+    """独立线程里的播放器：只负责把 PCM 喂给 QAudioSink 并回报位置。"""
+
+    tick = Signal(float, float)          # (位置ms, perf_counter)
+    stateChanged = Signal(bool)
+    finished = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self._sink = None
+        self._device = None
+        self._timer = None
+        self._pcm = None
+        self._sr = 48000
+        self._rate = 1.0
+        self._duration_ms = 0.0
+        self._seek_ms = 0.0
+        self._volume = 0.85
+        self._auto_latency_ms = 0.0
+        self._playing = False
+        self.underruns = 0
+
+    # ------------------------------------------------------------- 控制
+    def _ensure_sink(self) -> QAudioSink:
+        """sink 复用：每次重新创建会让 Windows 音频后端重新初始化，
+        实测第二次播放要多花 ~0.5 秒才出声（表现为开头半秒没声、进度不动）。"""
+        if self._sink is not None:
+            return self._sink
+        dev = QMediaDevices.defaultAudioOutput()
+        if dev is None or dev.isNull():
+            raise RuntimeError("没有可用的音频输出设备")
+        fmt = QAudioFormat()
+        fmt.setSampleRate(self._sr)
+        fmt.setChannelCount(2)
+        fmt.setSampleFormat(QAudioFormat.Int16)
+        sink = QAudioSink(dev, fmt)
+        bytes_per_sec = self._sr * 4
+        # 150ms 缓冲：界面偶尔卡半秒也不会让声卡饿死；延迟由 _auto_latency_ms 补掉
+        buf_bytes = int(bytes_per_sec * 0.15)
+        sink.setBufferSize(buf_bytes)
+        self._auto_latency_ms = buf_bytes / bytes_per_sec * 1000.0
+        self._sink = sink
+        return sink
+
+    @Slot(object, float, float, float, int, float)
+    def start_play(self, pcm, seek_ms: float, rate: float, duration_ms: float,
+                   sr: int, volume: float) -> None:
+        self._teardown()
+        self._pcm = pcm
+        self._rate = max(0.01, float(rate))
+        self._duration_ms = float(duration_ms)
+        self._seek_ms = float(seek_ms)
+        self._volume = float(volume)
+        if int(sr) != self._sr:                 # 采样率变了才需要重建
+            self._sr = int(sr)
+            self._drop_sink()
+        try:
+            sink = self._ensure_sink()
+            sink.setVolume(self._volume)
+            self._device = _PCMDevice(pcm)
+            byte = int(self._seek_ms / 1000.0 * (self._sr / self._rate) * 4)
+            byte -= byte % 4
+            self._device.set_pos(byte)
+            self._device.open(QIODevice.ReadOnly)
+            sink.start(self._device)
+        except Exception:
+            self._teardown()
+            self.stateChanged.emit(False)
+            return
+        self._playing = True
+        if self._timer is None:
+            self._timer = QTimer(self)          # 在本线程里创建
+            self._timer.setInterval(30)
+            self._timer.timeout.connect(self._on_tick)
+        self._timer.start()
+        self.stateChanged.emit(True)
+
+    @Slot()
+    def stop_play(self) -> None:
+        if self._playing:
+            self.tick.emit(self._position(), time.perf_counter())
+        self._teardown()
+        self.stateChanged.emit(False)
+
+    @Slot(float)
+    def set_volume(self, v: float) -> None:
+        self._volume = max(0.0, min(1.0, float(v)))
+        if self._sink is not None:
+            self._sink.setVolume(self._volume)
+
+    # ------------------------------------------------------------- 内部
+    def _position(self) -> float:
+        if self._sink is None:
+            return self._seek_ms
+        elapsed = self._sink.processedUSecs() / 1000.0 - self._auto_latency_ms
+        return self._seek_ms + max(0.0, elapsed) * self._rate
+
+    def _on_tick(self) -> None:
+        if not self._playing or self._sink is None:
+            return
+        # 结束判定必须看「设备是否喂完 + 缓冲是否放完」：
+        # 位置里减掉了缓冲延迟，靠 pos >= duration 是永远到不了的（差一个缓冲时长）
+        drained = False
+        idle = False
+        try:
+            drained = self._device is not None and self._device.atEnd()
+            idle = _sink_is_idle(self._sink)
+        except Exception:
+            drained, idle = False, False
+        if drained and idle:
+            self.tick.emit(self._duration_ms, time.perf_counter())
+            self._teardown()
+            self.stateChanged.emit(False)
+            self.finished.emit()
+            return
+        if idle and not drained:
+            self.underruns += 1            # 还没喂完就 Idle = 声卡被饿到了
+        self.tick.emit(self._position(), time.perf_counter())
+
+    def _teardown(self) -> None:
+        self._playing = False
+        if self._timer is not None:
+            self._timer.stop()
+        if self._sink is not None:
+            try:
+                self._sink.stop()               # 只停，不销毁：下次播放直接复用
+            except Exception:
+                pass
+        if self._device is not None:
+            try:
+                self._device.close()
+            except Exception:
+                pass
+            self._device.deleteLater()
+            self._device = None
+
+    def _drop_sink(self) -> None:
+        if self._sink is not None:
+            try:
+                self._sink.stop()
+            except Exception:
+                pass
+            self._sink.deleteLater()
+            self._sink = None

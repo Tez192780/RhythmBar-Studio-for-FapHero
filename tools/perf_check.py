@@ -15,7 +15,6 @@ os.environ.pop("QT_QPA_PLATFORM", None)
 
 import numpy as np  # noqa: E402
 from PySide6.QtCore import QTimer  # noqa: E402
-from PySide6.QtMultimedia import QAudio  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from rbar.app import QSS, build_palette  # noqa: E402
@@ -177,11 +176,9 @@ def main() -> None:
         app.quit()
 
     def poll_audio() -> None:
-        s = win.engine._sink
-        if s is not None and win.engine.playing:
+        if win.engine.playing:
             UNDERRUNS["n"] += 1
-            if s.state() == QAudio.State.IdleState:   # 播放中不该出现 Idle
-                UNDERRUNS["idle"] += 1
+            UNDERRUNS["idle"] = max(UNDERRUNS["idle"], win.engine.underruns)
 
     poll = QTimer()
     poll.setInterval(20)

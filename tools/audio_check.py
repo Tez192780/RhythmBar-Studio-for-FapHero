@@ -74,14 +74,8 @@ def main() -> None:
     state = {"t0": 0.0, "pos": 0.0}
 
     def diag(tag: str) -> None:
-        s = eng._sink
-        d = eng._device
-        if s is None or d is None:
-            print(f"  · {tag}: sink/device 已释放")
-            return
-        print(f"  · {tag}: processed={s.processedUSecs() / 1000:.0f}ms elapsed={s.elapsedUSecs() / 1000:.0f}ms "
-              f"state={s.state()} bytes_read={d._pos}/{len(d._data)} free={s.bytesFree()} "
-              f"buffer={s.bufferSize()}")
+        print(f"  · {tag}: 位置={eng.position_ms():.0f}ms  播放中={eng.playing}  "
+              f"欠载={eng.underruns}", flush=True)
 
     def start() -> None:
         try:
@@ -117,12 +111,14 @@ def main() -> None:
         eng.set_rate(1.0)
         eng.seek(4000.0)
         eng.play()
-        QTimer.singleShot(1600, ended)
+        QTimer.singleShot(3000, ended)
 
     def ended() -> None:
-        check("播到结尾自动停止", (not eng.playing) or eng.position_ms() > 4900,
-              f"playing={eng.playing} pos={eng.position_ms():.0f}")
-        eng.stop()
+        pos = eng.position_ms()
+        check("播到结尾自动停止（或已到末尾）", (not eng.playing) or pos > 4900,
+              f"playing={eng.playing} pos={pos:.0f}")
+        check("没有音频欠载", eng.underruns == 0, f"{eng.underruns} 次")
+        eng.shutdown()
         print()
         if fails:
             print("失败项：", fails)
