@@ -10,7 +10,7 @@
 ## 30 秒上手
 
 1. 双击 **`启动.bat`**（首次会自动装依赖）
-2. 把 **mp3 / wav / flac** 拖进窗口
+2. 把 视频或音频 拖进窗口
 3. 按 **空格** 播放，跟着音乐按 **F** 打点 —— 或者点「自动检测 BPM」+「自动铺点」
 4. 在时间轴上微调，右侧面板调外观
 5. **Ctrl+E** 导出透明视频，拖进剪辑软件，放在原视频**上层**
@@ -159,106 +159,3 @@ python main.py
 ```
 
 想打包成单文件 exe：双击 `build_exe.bat`（需要联网装 pyinstaller，产物在 `dist/`）。
-
----
-
-## 目录结构
-
-```
-main.py                入口
-启动.bat               无控制台启动（推荐）
-启动-调试.bat          带控制台，看报错
-rbar/
-  app.py               应用入口、深色主题
-  model.py             音符 / 谱面 / 渲染设置 / 导出设置 / 撤销栈
-  timing.py            毫秒<->拍 映射、BPM 分段、吸附、Tap 测速
-  theme.py             音符外观、底板、判定点、残影、预设
-  render.py            渲染器（预览与导出共用同一份绘制代码）
-  audio.py             解码、波形峰值、频谱图、播放引擎、节拍器、BPM/起音检测
-  video.py             参考视频：抽帧胶片条、精确取帧、镜头切换检测、音轨探测
-  exporter.py          离屏渲染 -> ffmpeg 管道 -> 透明视频
-  doc.py               工程文档 + 撤销栈 + 编辑器状态
-  settings.py          应用设置持久化
-  demo.py              示例工程
-  tasks.py             后台线程任务
-  ui/                  主窗口、时间轴、预览、参考画面、面板、对话框
-tools/                 开发/自检脚本（不影响使用）
-tests/smoke_test.py    无头冒烟测试
-```
-
-自检脚本（开发用，普通用户不用管）：
-
-```
-python tests\smoke_test.py          无显示器跑：时间映射/撤销/音频分析/频谱/界面构建
-python tools\check_export.py        六种导出格式全跑一遍并用 ffprobe 校验 alpha
-python tools\audio_check.py         音频播放链路（会出声）
-python tools\ui_interact.py         模拟鼠标：三种模式/框选区间/连续刷/循环区间/保存
-python tools\video_check.py         参考视频：抽帧/取帧/镜头切换
-python tools\spec_check.py          频谱图：已知频率落在正确的行上
-python tools\dev_judge.py           判定菱形是实心的（像素级检查）
-python tools\perf_check.py          量化播放时的绘制耗时与音频欠载
-python tools\e2e_check.py           端到端：音频+视频+填充+导出
-python tools\lint_check.py          语法与未用导入检查
-python tools\git_push.py            提交并推送到 GitHub
-```
-
-> 改动流程约定：跑 `lint_check` + `ui_interact` + `e2e_check` 全绿 → 双击 `上传更新.bat` 上传。
-
----
-
-## 上传更新到 GitHub
-
-仓库：<https://github.com/Tez192780/RhythmBar-Studio-for-FapHero>
-
-改完东西后，**双击 `上传更新.bat`** 就会自动提交并推送；也可以带一句说明：
-
-```
-上传更新.bat 修复播放头拖动被区间选择占用的问题
-```
-
-命令行等价写法（项目根目录）：
-
-```
-python tools\git_push.py                  # 自动生成提交信息（改了哪些文件）
-python tools\git_push.py "说明文字"        # 用你自己的说明
-python tools\git_push.py --pull "说明"     # 远程有新提交时，先 rebase 再推
-python tools\git_push.py --status          # 只看当前改动，不动仓库
-```
-
-* 第一次推送如果弹出 GitHub 登录窗口，登录一次之后就不用再登了
-* `build/`（自检产物）、`__pycache__/`、`*.rbarproj`（个人工程）都在 `.gitignore` 里，不会上传
-* `.gitattributes` 固定行尾：`.bat` 用 CRLF（Windows 批处理需要），源码/文档用 LF
-
----
-
-## 使用建议（卡点流程）
-
-1. **直接导入视频**（Ctrl+Shift+V）：视频里的音乐会自动变成工作音频，一次搞定声画
-2. 用「自动检测 BPM」或「Tap 测速」把节拍网格对准鼓点
-   —— 看时间轴的**频谱图**：把网格线压在音头竖纹上最准
-3. 铺点三选一或混用：
-   * 整段规整：**标尺上拖出区间 → 右键填充**（每半拍 / 每 250ms 一次填满）
-   * 跟着鼓点：**F 键手动打**（边看实时频谱边打，手感最好），
-     或切到**放置模式（B）**按住拖动连续刷
-   * 跟着画面：**自动铺点 → 视频镜头切换**
-4. 调外观：要「不挡原视频」就把**底板不透明度**调到 0.15~0.35，或选「极简·无底板」
-5. 导出 **MOV (qtrle)** 或 **MOV (ProRes 4444)**，帧率跟你的项目一致（通常 30 或 60）
-6. 剪辑软件里放在视频**上层**，位置/大小自己缩放到合适
-
-## 性能说明
-
-播放时的界面开销做过专门优化（静态层缓存成位图滚动复用、频谱图/胶片条一起进缓存、
-音符画笔与颜色缓存、屏幕外音符剔除、棋盘底纹理笔刷、状态栏降频刷新），
-实测 400 音符满屏 + 频谱图 + 胶片条全开时：时间轴 4.0ms/帧、预览条 2.6ms/帧，
-主线程 10ms 定时器实际间隔 10.12ms，音频欠载 0 次 —— 不会出现播放卡顿。
-想自己复测：`python tools\perf_check.py`。
-
-## 已知说明
-
-* 底板是**半透明**的（默认 30%），这本来就符合「不挡原视频」的诉求；
-  要完全只留音符，把底板模式设为「无底板」。
-* 外观参数的调节**不进撤销栈**（避免拖滑块刷屏）；音符和 BPM 的改动都可以撤销。
-* WebM 的透明通道需要支持 alpha 的解码器（Chrome 可以），
-  不确定的话优先用 MOV，PR / AE / 达芬奇 / 剪映 都稳。
-* 音频播放位置带 60ms 输出缓冲的自动补偿；如果你的声卡延迟明显，
-  在「设置 → 音画延迟校准」里微调。
