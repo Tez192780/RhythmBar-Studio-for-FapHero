@@ -189,16 +189,45 @@ tests/smoke_test.py    无头冒烟测试
 自检脚本（开发用，普通用户不用管）：
 
 ```
-python tests\smoke_test.py          无显示器跑：时间映射/撤销/音频分析/界面构建
+python tests\smoke_test.py          无显示器跑：时间映射/撤销/音频分析/频谱/界面构建
 python tools\check_export.py        六种导出格式全跑一遍并用 ffprobe 校验 alpha
 python tools\audio_check.py         音频播放链路（会出声）
-python tools\ui_interact.py         模拟鼠标验证加点/拖动/框选/长条/保存
+python tools\ui_interact.py         模拟鼠标：三种模式/框选区间/连续刷/循环区间/保存
 python tools\video_check.py         参考视频：抽帧/取帧/镜头切换
 python tools\spec_check.py          频谱图：已知频率落在正确的行上
+python tools\dev_judge.py           判定菱形是实心的（像素级检查）
 python tools\perf_check.py          量化播放时的绘制耗时与音频欠载
 python tools\e2e_check.py           端到端：音频+视频+填充+导出
 python tools\lint_check.py          语法与未用导入检查
+python tools\git_push.py            提交并推送到 GitHub
 ```
+
+> 改动流程约定：跑 `lint_check` + `ui_interact` + `e2e_check` 全绿 → 双击 `上传更新.bat` 上传。
+
+---
+
+## 上传更新到 GitHub
+
+仓库：<https://github.com/Tez192780/RhythmBar-Studio-for-FapHero>
+
+改完东西后，**双击 `上传更新.bat`** 就会自动提交并推送；也可以带一句说明：
+
+```
+上传更新.bat 修复播放头拖动被区间选择占用的问题
+```
+
+命令行等价写法（项目根目录）：
+
+```
+python tools\git_push.py                  # 自动生成提交信息（改了哪些文件）
+python tools\git_push.py "说明文字"        # 用你自己的说明
+python tools\git_push.py --pull "说明"     # 远程有新提交时，先 rebase 再推
+python tools\git_push.py --status          # 只看当前改动，不动仓库
+```
+
+* 第一次推送如果弹出 GitHub 登录窗口，登录一次之后就不用再登了
+* `build/`（自检产物）、`__pycache__/`、`*.rbarproj`（个人工程）都在 `.gitignore` 里，不会上传
+* `.gitattributes` 固定行尾：`.bat` 用 CRLF（Windows 批处理需要），源码/文档用 LF
 
 ---
 
