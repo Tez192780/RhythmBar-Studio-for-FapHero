@@ -7,6 +7,8 @@ import os
 import threading
 import time
 
+import numpy as np
+
 from PySide6.QtCore import QElapsedTimer, QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
@@ -68,13 +70,17 @@ class MainWindow(QMainWindow):
         self._virtual_base = 0.0
         self._export_cancel = threading.Event()
         self._export_task: Task | None = None
-        self.filmstrip = None            # 参考视频胶片条
-        self.video_info = None
+        self._media_cache: dict[str, tuple] = {}   # 路径 -> (samples, sr)
+        self._films: dict[str, object] = {}        # 路径 -> Filmstrip
         self._peaks = None
+        self._zoomed_once = False
         self.spec = None                 # 频谱图
         self._spec_task: Task | None = None
-        self._video_audio_ready = False
-        self._pending_audio: dict | None = None
+        self._media_mode = "replace"
+        self._media_path = ""
+        self._media_is_video = False
+        self._media_info = None
+        self._media_ainfo: dict = {}
         self._tap_times: list[float] = []
         self._last_autosave = 0.0
         self._fps_t = time.perf_counter()
@@ -562,7 +568,7 @@ class MainWindow(QMainWindow):
         self.preview.set_safe_area(bool(on))
 
     def _toggle_ref(self, on: bool) -> None:
-        self.refvideo.setVisible(bool(on) and self.filmstrip is not None)
+        self.refvideo.setVisible(bool(on) and bool(self._films))
 
     def _toggle_film(self, on: bool) -> None:
         self.doc.state.show_video = bool(on)
@@ -618,107 +624,215 @@ class MainWindow(QMainWindow):
         task.start()
 
     # ============================================================ 参考视频
-    def _video_path(self) -> str:
-        return self.filmstrip.path if self.filmstrip is not None else ""
-
     def _video_len(self) -> float:
-        fs = self.filmstrip
-        if fs is None or not fs.count:
-            return 0.0
-        return float(fs.times[-1])
+        """媒体总长度（取所有片段末端）。"""
+        ends = [c.end_ms() for c in self.doc.project.clips if c.duration_ms > 0]
+        return max(ends) if ends else 0.0
+
+    def _video_path(self) -> str:
+        for c in self.doc.project.clips:
+            if c.kind == "video":
+                return c.path
+        return ""
 
     def _update_duration(self) -> None:
-        dur = max(self.engine.duration_ms, self._video_len())
-        self.timeline.set_duration(dur)
+        self.timeline.set_duration(max(self.engine.duration_ms, self._video_len()))
 
     def import_video(self, path: str | None = None) -> None:
-        """导入参考视频：抽成胶片条画在时间轴上，并可显示画面/按镜头切换铺点。"""
+        """导入参考视频（也可以直接拖进窗口）。"""
         if not path:
             path, _ = QFileDialog.getOpenFileName(
-                self, "导入参考视频", self.settings.last_dir,
-                "视频 (*.mp4 *.mov *.mkv *.avi *.webm *.flv *.wmv *.m4v *.ts *.mpg);;所有文件 (*)")
+                self, "导入音视频", self.settings.last_dir,
+                "音视频 (*.mp3 *.wav *.flac *.m4a *.mp4 *.mov *.mkv *.avi *.webm *.flv *.wmv);;"
+                "所有文件 (*)")
+        if path:
+            self.import_media(path)
+
+    # ========================================================== 多段媒体
+    def _ask_media_mode(self, path: str, is_video: bool) -> str | None:
+        """每次导入都问：替换 / 追加 / 取消。"""
+        clips = self.doc.project.clips
+        if not clips or self.silent:
+            return "replace" if not clips else "append"
+        box = QMessageBox(self)
+        box.setWindowTitle("导入媒体")
+        box.setIcon(QMessageBox.Question)
+        kind = "视频" if is_video else "音频"
+        box.setText(f"要导入的{kind}：{os.path.basename(path)}")
+        box.setInformativeText(
+            f"当前时间轴上已有 {len(clips)} 段媒体（总长 {self._video_len() / 1000:.1f}s）。\n\n"
+            f"· 追加：接在最后一段之后（保持现有内容）\n"
+            f"· 替换：清空现有媒体，只留这一段\n"
+            f"· 插入：放到播放头位置，其余片段往后顺延")
+        b_append = box.addButton("追加到末尾", QMessageBox.AcceptRole)
+        b_insert = box.addButton("插入到播放头", QMessageBox.ActionRole)
+        b_replace = box.addButton("替换全部", QMessageBox.DestructiveRole)
+        box.addButton("取消", QMessageBox.RejectRole)
+        box.setDefaultButton(b_append)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is b_append:
+            return "append"
+        if clicked is b_insert:
+            return "insert"
+        if clicked is b_replace:
+            return "replace"
+        return None
+
+    def import_media(self, path: str, mode: str | None = None) -> None:
+        """导入一段音频或视频；音频会解码进缓存，视频还会抽参考画面。"""
         if not path or not os.path.isfile(path):
             return
         ff = self.settings.ffmpeg
         if not ff or not os.path.isfile(ff):
             self._warn("缺少 ffmpeg", "没找到 ffmpeg.exe，请在「设置」标签里指定路径。")
             return
-        from ..video import extract_filmstrip, probe_audio_stream, probe_video
+        is_video = path.lower().endswith(VIDEO_EXT)
+        from ..video import probe_audio_stream, probe_video
 
-        info = probe_video(path)
-        if info.duration_ms <= 0:
+        if mode is None:
+            mode = self._ask_media_mode(path, is_video)
+        if mode is None:
+            return
+        info = probe_video(path) if is_video else None
+        ainfo = probe_audio_stream(path) if is_video else {"has": True}
+        if is_video and info is not None and info.duration_ms <= 0:
             info.duration_ms = 60000.0
-        ainfo = probe_audio_stream(path)
-        self._pending_audio = ainfo
-        if ainfo.get("has"):
-            self.statusBar().showMessage(
-                f"视频里有声音（{ainfo.get('codec', '?')} "
-                f"{ainfo.get('channels', '?')}ch）—— 稍后会用它来对音")
-        dlg = QProgressDialog("正在抽取参考画面…", "取消", 0, 100, self)
-        dlg.setWindowTitle("导入参考视频")
-        dlg.setWindowModality(Qt.WindowModal)
-        dlg.setMinimumDuration(0)
-        cancel = threading.Event()
-        dlg.canceled.connect(cancel.set)
-
-        def work():
-            return extract_filmstrip(
-                path, info, ff, target_fps=4.0, thumb_h=72, max_frames=1500,
-                progress=lambda i, n: task.progress.emit(i, n, 0.0),
-                is_cancelled=cancel.is_set,
-            )
-
-        task = Task(work, parent=self)
-        task.progress.connect(lambda i, n, _e: (dlg.setMaximum(max(1, n)), dlg.setValue(i)))
-        task.done.connect(lambda fs: self._video_ready(path, info, fs, dlg))
-        task.failed.connect(lambda m: self._video_failed(m, dlg))
+        if not ainfo.get("has") and not is_video:
+            self._warn("这个文件没有声音", "请换一个音频文件。")
+            return
+        self._media_mode = mode
+        self._media_path = path
+        self._media_is_video = is_video
+        self._media_info = info
+        self._media_ainfo = ainfo
+        self.statusBar().showMessage(
+            f"正在{'抽取参考画面与解码音频' if is_video else '解码音频'}：{os.path.basename(path)} …")
         QApplication.setOverrideCursor(Qt.BusyCursor)
-        self.statusBar().showMessage(f"正在抽取参考画面：{os.path.basename(path)} …")
+        task = Task(self._media_worker, path, bool(is_video), ff, bool(ainfo.get("has")), parent=self)
+        task.done.connect(lambda res: self._media_ready(path, mode, res))
+        task.failed.connect(self._task_failed)
         task.start()
 
-    def _video_ready(self, path: str, info, filmstrip, dlg) -> None:
-        dlg.close()
+    @staticmethod
+    def _media_worker(path: str, is_video: bool, ffmpeg: str, has_audio: bool):
+        from ..video import extract_filmstrip, probe_video
+
+        samples = None
+        sr = 48000
+        pk = None
+        if has_audio:
+            samples, sr = decode_audio(path, ffmpeg=ffmpeg)
+            if samples.size == 0:
+                samples = None
+        if samples is not None:
+            pk = peaks(samples, PEAK_BUCKETS)
+        film = None
+        if is_video:
+            info = probe_video(path)
+            film = extract_filmstrip(path, info, ffmpeg, target_fps=4.0, thumb_h=72,
+                                     max_frames=1500)
+        return samples, sr, pk, film
+
+    def _media_ready(self, path: str, mode: str, res) -> None:
+        from ..model import MediaClip
+
         QApplication.restoreOverrideCursor()
-        self.filmstrip = filmstrip
-        self.video_info = info
-        self.doc.project.video_path = path
-        self.timeline.set_filmstrip(filmstrip)
-        self.refvideo.set_filmstrip(filmstrip, self.settings.ffmpeg)
-        self.refvideo.setVisible(self.a_ref.isChecked())
-        self._update_duration()
+        samples, sr, pk, film = res
+        info = self._media_info
+        ainfo = self._media_ainfo or {}
+        is_video = bool(self._media_is_video)
+        if samples is not None:
+            self._media_cache[path] = (samples, sr)
+        if film is not None:
+            self._films[path] = film
+
+        audio_ms = (samples.shape[0] * 1000.0 / sr) if samples is not None else 0.0
+        video_ms = 0.0
+        if is_video and film is not None and getattr(film, "count", 0):
+            video_ms = float(film.times[-1]) + float(film.step_ms)
+        if info is not None:
+            video_ms = max(video_ms, float(info.duration_ms or 0.0))
+        dur = max(audio_ms, video_ms, 1000.0)
+
+        clip = MediaClip(path=path, kind="video" if is_video else "audio",
+                         duration_ms=dur, name=os.path.basename(path),
+                         has_audio=samples is not None)
+        clips = self.doc.project.clips
+        if mode == "replace":
+            clips.clear()
+            clip.offset_ms = 0.0
+        elif mode == "insert":
+            at = self.position_ms
+            clip.offset_ms = at
+            for c in clips:
+                if c.offset_ms >= at:
+                    c.offset_ms += dur
+        else:                                   # append
+            clip.offset_ms = self._video_len()
+        clips.append(clip)
+
+        if is_video:
+            self.doc.project.video_path = path
+        if clip.has_audio:
+            self.doc.project.audio_path = path
+        self.doc.touch("导入媒体")
+        self._rebuild_media()
         self.settings.remember_dir(path)
         self.settings.save()
+        self.refvideo.setVisible(self.a_ref.isChecked() and bool(self._films))
+        mode_txt = {"replace": "替换并载入", "append": "追加到末尾", "insert": "插入到播放头"}[mode]
         self.statusBar().showMessage(
-            f"参考视频已就绪：{os.path.basename(path)}  "
-            f"{info.width}×{info.height}  {filmstrip.count} 张参考画面", 8000)
-        self.tabs.setCurrentWidget(self.panel_chart)
-        self._maybe_use_video_audio(path)
+            f"已{mode_txt}：{os.path.basename(path)}　"
+            f"（{dur / 1000:.1f}s，{'视频+音频' if is_video and clip.has_audio else ('视频（无声）' if is_video else '音频')}）"
+            f"　时间轴共 {len(clips)} 段 / {self._video_len() / 1000:.1f}s", 9000)
+        if not getattr(self, "_zoomed_once", False):
+            self.timeline.zoom_to_fit()
+            self._zoomed_once = True
 
-    def _maybe_use_video_audio(self, path: str) -> None:
-        """视频自带声音的话，直接拿它当工作音频（对音用）。"""
-        ainfo = self._pending_audio or {}
-        if not ainfo.get("has"):
-            self._pending_audio = None
-            return
-        self._pending_audio = None
-        if self.engine.samples is None:
-            self.load_audio(path)
-            self._video_audio_ready = True
-            self.statusBar().showMessage("已用视频里的声音作为工作音频（波形/频谱/BPM 都基于它）", 8000)
-            return
-        if self.silent:
-            return
-        r = QMessageBox.question(
-            self, "视频里有声音",
-            "当前已经载入了一段音频。要用视频里的声音替换吗？\n"
-            "（换成视频的声音后，波形/频谱/自动 BPM 都基于视频音轨）",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if r == QMessageBox.Yes:
-            self.load_audio(path)
-            self._video_audio_ready = True
+    def _rebuild_media(self) -> None:
+        """把所有片段的音频混成一条时间轴音频 —— 波形/频谱/BPM/播放全都基于它。"""
+        clips = self.doc.project.clips
+        sr = 48000
+        total = max(1000.0, self._video_len())
+        n = int(total / 1000.0 * sr) + 1
+        mix = np.zeros((n, 2), dtype=np.float32)
+        any_audio = False
+        for c in clips:
+            got = self._media_cache.get(c.path)
+            if got is None:
+                continue
+            samples, csr = got
+            s0 = int(c.src_start_ms / 1000.0 * csr)
+            take = c.duration_ms or (samples.shape[0] / csr * 1000.0 - c.src_start_ms)
+            seg = samples[s0: s0 + int(take / 1000.0 * csr)]
+            if seg.size == 0:
+                continue
+            d0 = int(c.offset_ms / 1000.0 * sr)
+            e = min(n, d0 + seg.shape[0])
+            if e > d0:
+                mix[d0:e] += seg[: e - d0]
+                any_audio = True
+        if any_audio:
+            np.clip(mix, -1.0, 1.0, out=mix)
+        self.engine.samples = mix if any_audio else None
+        self.engine.sr = sr
+        self.engine.path = clips[0].path if clips else ""
+        self.engine.duration_ms = mix.shape[0] * 1000.0 / sr
+        self.engine._rebuild()
+        self._peaks = peaks(mix, PEAK_BUCKETS) if any_audio else None
+        self.timeline.set_audio(self._peaks, max(self.engine.duration_ms, self._video_len()))
+        self.timeline.set_clips([(c, self._films.get(c.path)) for c in clips])
+        self.spectrum.set_audio(mix if any_audio else None, sr)
+        self.refvideo.set_clips([(c, self._films.get(c.path)) for c in clips], self.settings.ffmpeg)
+        self.spec = None
+        self.timeline.set_spectrogram(None)
+        if any_audio and self.a_spec.isChecked():
+            QTimer.singleShot(120, self.start_spectrogram)
+        self._update_duration()
 
     def use_video_audio(self) -> None:
-        """手动重新用视频里的声音当音频。"""
+        """把某个视频片段里的声音单独提出来当音频（多加一段）。"""
         path = self._video_path()
         if not path:
             self._info("还没有参考视频", "先导入一个带声音的视频。")
@@ -728,13 +842,7 @@ class MainWindow(QMainWindow):
         if not probe_audio_stream(path).get("has"):
             self._info("这个视频没有声音", "视频里没有音轨，请另外载入音频文件。")
             return
-        self.load_audio(path)
-        self._video_audio_ready = True
-
-    def _video_failed(self, msg: str, dlg) -> None:
-        dlg.close()
-        QApplication.restoreOverrideCursor()
-        self._task_failed(msg)
+        self.import_media(path, mode="append")
 
     # ================================================================ 时钟
     def _tick(self) -> None:
@@ -791,51 +899,20 @@ class MainWindow(QMainWindow):
     # ================================================================ 音频
     def open_audio(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "打开音频", self.settings.last_dir,
+            self, "导入音频", self.settings.last_dir,
             "音频 (*.mp3 *.wav *.flac *.m4a *.aac *.ogg *.opus *.wma *.aiff);;所有文件 (*)")
         if path:
-            self.load_audio(path)
+            self.import_media(path)
 
     def load_audio(self, path: str) -> None:
-        ff = self.settings.ffmpeg
-        if not ff or not os.path.isfile(ff):
-            QMessageBox.warning(self, "缺少 ffmpeg", "没找到 ffmpeg.exe，请在「设置」标签里指定路径。")
-            return
-        self.statusBar().showMessage(f"正在解码音频：{os.path.basename(path)} …")
-        QApplication.setOverrideCursor(Qt.BusyCursor)
-        task = Task(self._decode_worker, path, ff, parent=self)
-        task.done.connect(lambda res: self._audio_ready(path, res))
-        task.failed.connect(self._task_failed)
-        task.start()
+        """兼容旧调用：当作「导入一段媒体」。"""
+        self.import_media(path)
 
     @staticmethod
     def _decode_worker(path: str, ffmpeg: str):
         samples, sr = decode_audio(path, ffmpeg=ffmpeg)
         pk = peaks(samples, PEAK_BUCKETS)
         return samples, sr, pk
-
-    def _audio_ready(self, path: str, res) -> None:
-        QApplication.restoreOverrideCursor()
-        samples, sr, pk = res
-        self.engine.samples = samples
-        self.engine.sr = sr
-        self.engine.path = path
-        self.engine.duration_ms = samples.shape[0] * 1000.0 / sr
-        self.engine._rebuild()
-        self.doc.project.audio_path = path
-        self.doc.touch("载入音频")
-        self._peaks = pk
-        self.timeline.set_audio(pk, max(self.engine.duration_ms, self._video_len()))
-        self.spectrum.set_audio(samples, sr)
-        self.spec = None
-        self.timeline.set_spectrogram(None)
-        if self.a_spec.isChecked():
-            QTimer.singleShot(120, self.start_spectrogram)
-        self.settings.remember_dir(path)
-        self.settings.save()
-        self.timeline.zoom_to_fit()
-        self.statusBar().showMessage(
-            f"已载入 {os.path.basename(path)}（{fmt_time(self.engine.duration_ms)}）", 6000)
 
     def _task_failed(self, msg: str) -> None:
         QApplication.restoreOverrideCursor()
@@ -1172,8 +1249,14 @@ class MainWindow(QMainWindow):
             if source == "video":
                 from ..video import scene_cuts
 
-                fs = self.filmstrip
-                times = scene_cuts(fs, thr, min_gap_ms=gap) if fs is not None else []
+                times: list[float] = []
+                for c in list(self.doc.project.clips):
+                    fs = self._films.get(c.path)
+                    if fs is None or not getattr(fs, "count", 0):
+                        continue
+                    for t in scene_cuts(fs, thr, min_gap_ms=gap):
+                        times.append(c.offset_ms + t - c.src_start_ms)
+                times = sorted(t for t in times if t >= 0)
             else:
                 times = detect_onsets(self.engine.samples, self.engine.sr,
                                       sensitivity=sens, min_gap_ms=gap)
@@ -1215,13 +1298,12 @@ class MainWindow(QMainWindow):
         self._peaks = None
         self.spec = None
         self._spec_task = None
-        self._video_audio_ready = False
         self.spectrum.set_audio(None, 48000)
         self.timeline.set_spectrogram(None)
-        self.filmstrip = None
-        self.video_info = None
-        self.timeline.set_filmstrip(None)
-        self.refvideo.set_filmstrip(None)
+        self._media_cache.clear()
+        self._films.clear()
+        self.timeline.set_clips([])
+        self.refvideo.set_clips([])
         self.refvideo.setVisible(False)
         self.doc.project = project
         self.doc.undo_stack.clear()
@@ -1229,19 +1311,55 @@ class MainWindow(QMainWindow):
         self.doc.mark_clean()
         self.doc.state = type(self.doc.state)()
         self.selection_loaded = True
-        path = audio_path or project.audio_path
         self.timeline.set_audio(None, 0.0)
         self.timeline.set_duration(0.0)
         self.refresh_all()
-        if path and os.path.isfile(path):
-            self.load_audio(path)
+        # 恢复工程里的媒体片段：逐个解码进缓存，最后统一混音
+        from ..model import MediaClip
+
+        restore = [c for c in project.clips if c.path and os.path.isfile(c.path)]
+        gone = len(project.clips) - len(restore)
+        if audio_path and os.path.isfile(audio_path) and not any(c.path == audio_path for c in restore):
+            restore.append(MediaClip(path=audio_path, kind="audio",
+                                     name=os.path.basename(audio_path)))
+        if gone:
+            self.statusBar().showMessage(f"有 {gone} 段媒体文件找不到了，已跳过", 7000)
+        if restore:
+            self._restore_queue = list(restore)
+            QTimer.singleShot(200, self._restore_next)
         elif len(project.chart) == 0:
-            self.statusBar().showMessage("空工程：先载入音频，或用「示例工程」练手", 6000)
-        # 工程里记着参考视频就自动恢复
-        vpath = project.video_path
-        if vpath and os.path.isfile(vpath):
-            QTimer.singleShot(300, lambda: self.import_video(vpath))
+            self.statusBar().showMessage("空工程：先导入音频/视频，或用「示例工程」练手", 6000)
         self._refresh_recent()
+
+    def _restore_next(self) -> None:
+        """依次把工程里的媒体片段解码回缓存。"""
+        q = getattr(self, "_restore_queue", [])
+        if not q:
+            self._rebuild_media()
+            self.timeline.zoom_to_fit()
+            if self._films:
+                self.refvideo.setVisible(self.a_ref.isChecked())
+            self.statusBar().showMessage(
+                f"工程已就绪：{len(self.doc.project.clips)} 段媒体 / "
+                f"{self._video_len() / 1000:.1f}s", 6000)
+            return
+        clip = q.pop(0)
+        ff = self.settings.ffmpeg
+        if not ff or not os.path.isfile(ff):
+            return
+        task = Task(self._media_worker, clip.path, clip.kind == "video", ff,
+                    bool(clip.has_audio), parent=self)
+        task.done.connect(lambda res, c=clip: self._restore_done(c, res))
+        task.failed.connect(lambda _m: self._restore_next())
+        task.start()
+
+    def _restore_done(self, clip, res) -> None:
+        samples, sr, _pk, film = res
+        if samples is not None:
+            self._media_cache[clip.path] = (samples, sr)
+        if film is not None:
+            self._films[clip.path] = film
+        self._restore_next()
 
     def open_project(self) -> None:
         path, _ = QFileDialog.getOpenFileName(

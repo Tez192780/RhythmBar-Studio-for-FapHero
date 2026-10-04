@@ -224,14 +224,50 @@ class ExportSettings:
 
 
 # --------------------------------------------------------------------- 工程
+@dataclass(eq=False)
+class MediaClip:
+    """一段导入的媒体（音频或视频），可以摆到时间轴上的任意位置。"""
+
+    path: str = ""
+    kind: str = "audio"          # audio | video
+    offset_ms: float = 0.0       # 在时间轴上的起点
+    src_start_ms: float = 0.0    # 从源文件的哪一刻开始取
+    duration_ms: float = 0.0     # 取多长（0 = 取到源结尾）
+    name: str = ""
+    has_audio: bool = True
+
+    @property
+    def label(self) -> str:
+        return self.name or os.path.basename(self.path)
+
+    def end_ms(self) -> float:
+        return self.offset_ms + self.duration_ms
+
+    def to_dict(self) -> dict:
+        return {
+            "path": self.path, "kind": self.kind, "offset_ms": round(self.offset_ms, 3),
+            "src_start_ms": round(self.src_start_ms, 3), "duration_ms": round(self.duration_ms, 3),
+            "name": self.name, "has_audio": bool(self.has_audio),
+        }
+
+    @staticmethod
+    def from_dict(d: dict) -> "MediaClip":
+        c = MediaClip()
+        for k, v in (d or {}).items():
+            if hasattr(c, k):
+                setattr(c, k, v)
+        return c
+
+
 class Project:
     def __init__(self):
         self.chart = Chart()
         self.theme = Theme()
         self.render = RenderSettings()
         self.export = ExportSettings()
-        self.audio_path: str = ""
-        self.video_path: str = ""      # 参考视频（对照用）
+        self.audio_path: str = ""      # 兼容旧工程：= 第一个音频片段
+        self.video_path: str = ""      # 兼容旧工程：= 第一个视频片段
+        self.clips: list[MediaClip] = []
         self.audio_duration_ms: float = 0.0
         self.path: str = ""
 
@@ -239,9 +275,10 @@ class Project:
     def to_dict(self) -> dict:
         return {
             "app": "rbar",
-            "version": 1,
+            "version": 2,
             "audio_path": self.audio_path,
             "video_path": self.video_path,
+            "clips": [c.to_dict() for c in self.clips],
             "chart": self.chart.to_dict(),
             "theme": self.theme.to_dict(),
             "render": self.render.to_dict(),
@@ -259,6 +296,19 @@ class Project:
         self.export = ExportSettings.from_dict(d.get("export", {}))
         self.audio_path = str(d.get("audio_path", ""))
         self.video_path = str(d.get("video_path", ""))
+        self.clips = [MediaClip.from_dict(x) for x in (d.get("clips") or [])]
+        if not self.clips and self.audio_path:
+            self.clips = [MediaClip(path=self.audio_path, kind="audio",
+                                    name=os.path.basename(self.audio_path))]
+
+    @staticmethod
+    def _rel(path: str, base: str) -> str:
+        if not path:
+            return ""
+        try:
+            return os.path.relpath(path, base)
+        except ValueError:
+            return path
 
     def save(self, path: str) -> None:
         path = os.path.abspath(path)
@@ -266,8 +316,10 @@ class Project:
             path += PROJECT_EXT
         d = self.to_dict()
         base = os.path.dirname(path)
-        d["audio_path"] = os.path.relpath(self.audio_path, base) if self.audio_path else ""
-        d["video_path"] = os.path.relpath(self.video_path, base) if self.video_path else ""
+        d["audio_path"] = self._rel(self.audio_path, base)
+        d["video_path"] = self._rel(self.video_path, base)
+        for cd, raw in zip(d["clips"], self.clips):
+            cd["path"] = self._rel(raw.path, base)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(d, f, ensure_ascii=False, indent=1)
         self.path = path
@@ -284,6 +336,9 @@ class Project:
             if v and not os.path.isabs(v):
                 v = os.path.normpath(os.path.join(base, v))
             setattr(p, key, v)
+        for c in p.clips:
+            if c.path and not os.path.isabs(c.path):
+                c.path = os.path.normpath(os.path.join(base, c.path))
         p.path = os.path.abspath(path)
         return p
 

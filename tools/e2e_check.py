@@ -214,10 +214,10 @@ def main() -> None:
         QTimer.singleShot(400, wait_video)
 
     def wait_video(elapsed: int = 0) -> None:
-        if (win.filmstrip is None or win.engine.samples is None) and elapsed < 25000:
+        if (not win._films or win.engine.samples is None) and elapsed < 25000:
             QTimer.singleShot(200, lambda: wait_video(elapsed + 200))
             return
-        fs = win.filmstrip
+        fs = next(iter(win._films.values()), None)
         check("胶片条已生成", fs is not None and fs.count > 20, f"{fs.count if fs else 0}")
         if fs is None:
             finish()

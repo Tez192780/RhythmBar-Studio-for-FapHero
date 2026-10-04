@@ -223,6 +223,7 @@ class RefFrameWidget(QWidget):
         super().__init__(parent)
         self.doc = doc
         self.film = None
+        self.clips: list = []          # [(MediaClip, Filmstrip|None), ...]
         self.ffmpeg = ""
         self.t_ms = 0.0
         self.playing = False
@@ -236,11 +237,29 @@ class RefFrameWidget(QWidget):
         self._timer.setInterval(320)
         self._timer.timeout.connect(self._want_precise)
 
-    def set_filmstrip(self, film, ffmpeg: str = "") -> None:
-        self.film = film
+    def set_clips(self, items, ffmpeg: str = "") -> None:
+        self.clips = list(items or [])
         self.ffmpeg = ffmpeg or self.ffmpeg
         self._precise.clear()
         self.update()
+
+    def set_filmstrip(self, film, ffmpeg: str = "") -> None:
+        self.film = film
+        self.clips = [] if film is None else [(film, film)]
+        self.ffmpeg = ffmpeg or self.ffmpeg
+        self._precise.clear()
+        self.update()
+
+    def _active(self):
+        """播放头落在哪一段视频里 → (片段, 胶片, 源内时间ms)。"""
+        for item in self.clips:
+            clip, fs = item if isinstance(item, tuple) else (item, item)
+            if fs is None or not getattr(fs, "count", 0):
+                continue
+            dur = getattr(clip, "duration_ms", 0.0) or 0.0
+            if clip.offset_ms <= self.t_ms <= clip.offset_ms + max(dur, float(fs.times[-1])):
+                return clip, fs, self.t_ms - clip.offset_ms + getattr(clip, "src_start_ms", 0.0)
+        return None, None, 0.0
 
     def set_playhead(self, ms: float, playing: bool) -> None:
         self.t_ms = float(ms)
@@ -253,18 +272,19 @@ class RefFrameWidget(QWidget):
 
     # ---------------------------------------------------------- 精确取帧
     def _want_precise(self) -> None:
-        if self.film is None or self.playing or self._busy:
+        _clip, fs, src_ms = self._active()
+        if fs is None or self.playing or self._busy:
             return
         key = int(self.t_ms // 40)
         if key in self._precise:
             return
         from ..tasks import Task
-        from ..video import decode_frame, probe_video
+        from ..video import decode_frame
 
-        path = self.film.path
+        path = fs.path
 
         def work():
-            arr, w, h = decode_frame(path, key * 40.0, None, 270, self.ffmpeg)
+            arr, w, h = decode_frame(path, src_ms, None, 270, self.ffmpeg)
             import numpy as np
 
             a = np.ascontiguousarray(arr)
@@ -301,13 +321,14 @@ class RefFrameWidget(QWidget):
                    "参考视频" + ("（取帧中…）" if self._busy else ""))
         img = None
         key = int(self.t_ms // 40)
+        clip, fs, src_ms = self._active()
         if key in self._precise:
             img = self._precise[key][0]
-        elif self.film is not None and self.film.count:
-            img = self.film.image(self.film.index_at(self.t_ms))
+        elif fs is not None and fs.count:
+            img = fs.image(fs.index_at(src_ms))
         if img is None or img.isNull():
             p.setPen(QColor("#4a5560"))
-            p.drawText(area, Qt.AlignCenter, "没有参考视频\n文件 → 导入参考视频")
+            p.drawText(area, Qt.AlignCenter, "没有参考视频\n文件 → 导入音视频")
         else:
             iw, ih = img.width(), img.height()
             k = min(area.width() / max(1, iw), area.height() / max(1, ih))
@@ -319,14 +340,15 @@ class RefFrameWidget(QWidget):
             p.setBrush(Qt.NoBrush)
             p.drawRect(r)
         p.setPen(QColor("#8b949e"))
+        name = clip.label if clip is not None else ""
         p.drawText(QRectF(6, self.height() - 16, self.width() - 12, 14),
                    Qt.AlignLeft | Qt.AlignVCenter,
-                   f"{self.t_ms / 1000.0:8.3f}s")
+                   f"{self.t_ms / 1000.0:8.3f}s" + (f"  {name}" if name else ""))
         p.end()
 
     def mousePressEvent(self, ev) -> None:  # noqa: N802
         area = QRectF(4, 18, max(1.0, self.width() - 8), max(1.0, self.height() - 34))
-        if area.width() <= 1 or self.film is None:
+        if area.width() <= 1 or not self.clips:
             return
         k = (ev.position().x() - area.left()) / area.width()
         lo = self.t_ms - 1500.0

@@ -102,7 +102,7 @@ class TimelineWidget(QWidget):
         self._dur_ms = 0.0
         self._pos_ms = 0.0
         self._playing = False
-        self._film = None
+        self._clips: list = []
         self._spec = None
         self._xr: tuple[float, float] | None = None      # 增量补画时的像素范围
         self._hover: Note | None = None
@@ -154,12 +154,16 @@ class TimelineWidget(QWidget):
         self._bg = None
         self.update()
 
-    def set_filmstrip(self, film) -> None:
-        """参考视频胶片条。"""
-        self._film = film
+    def set_clips(self, items) -> None:
+        """媒体片段条：items = [(MediaClip, Filmstrip|None), ...]。"""
+        self._clips = list(items or [])
         self._bg = None
         self._update_min_height()
         self.update()
+
+    def set_filmstrip(self, film) -> None:
+        """兼容旧调用（单个片段）。"""
+        self.set_clips([] if film is None else [(film, film)])
 
     def set_spectrogram(self, spec) -> None:
         """整首歌的频谱图（对音用）。"""
@@ -169,7 +173,7 @@ class TimelineWidget(QWidget):
         self.update()
 
     def _update_min_height(self) -> None:
-        extra = FILM_H if self._film is not None else 0
+        extra = FILM_H if self._clips else 0
         if self._spec is not None:
             extra += SPEC_MIN
         self.setMinimumHeight(BPM_H + RULER_H + ROW_H + WAVE_MIN + extra)
@@ -251,7 +255,7 @@ class TimelineWidget(QWidget):
         return self._rows_top() + len(self.rows()) * self._row_h()
 
     def _film_h(self) -> float:
-        if self._film is None or not self.doc.state.show_video:
+        if not self._clips or not self.doc.state.show_video:
             return 0.0
         return min(FILM_H, max(24.0, self.height() * 0.18))
 
@@ -332,7 +336,7 @@ class TimelineWidget(QWidget):
             tuple(th.style(k).color for k in rows),
             tuple((round(s.time_ms, 4), round(s.bpm, 6)) for s in tm.segments),
             round(tm.offset_ms, 4), self._peaks is not None, round(self._dur_ms, 2),
-            id(self._film) if self._film is not None else 0, st.show_video,
+            len(self._clips), st.show_video,
             id(self._spec) if self._spec is not None else 0, st.show_spectrum,
         )
 
@@ -395,8 +399,8 @@ class TimelineWidget(QWidget):
         st = self.doc.state
         x0, x1 = self._xrange(pw)
         self._draw_rows(p, pw, h)
-        if self._film is not None and st.show_video:
-            self._draw_film(p, pw)
+        if self._clips and st.show_video:
+            self._draw_media(p, pw)
         if self._spec_on():
             self._draw_spectrum(p, pw)
         if st.show_waveform:
@@ -460,10 +464,10 @@ class TimelineWidget(QWidget):
         p.setPen(QColor("#5c6672"))
         p.drawText(QRectF(6, y0 - 13, GUTTER - 12, 12), Qt.AlignRight | Qt.AlignTop, "Hz")
 
-    # -- 参考视频胶片条
-    def _draw_film(self, p: QPainter, w: int) -> None:
-        fs = self._film
-        if fs is None or fs.count == 0:
+    # -- 媒体片段条（音频块 + 视频块内嵌胶片条）
+    def _draw_media(self, p: QPainter, w: int) -> None:
+        clips = self._clips
+        if not clips:
             return
         st = self.doc.state
         y0 = self._film_top()
@@ -471,27 +475,59 @@ class TimelineWidget(QWidget):
         if hh <= 1:
             return
         p.fillRect(QRectF(0, y0, w, hh), QColor("#0d1013"))
+        mx0, mx1 = self._xrange(w)
+        vis0, vis1 = max(GUTTER, mx0), mx1
         p.setRenderHint(QPainter.SmoothPixmapTransform, True)
-        fx0, fx1 = self._xrange(w)
-        t0, t1 = self.x_to_ms(max(GUTTER, fx0)), self.x_to_ms(fx1)
-        i0 = max(0, fs.index_at(t0) - 1)
-        i1 = min(fs.count - 1, fs.index_at(t1) + 1)
-        sw, sh = fs.thumb_w, fs.thumb_h
-        scale = hh / max(1, sh)
-        for i in range(i0, i1 + 1):
-            img = fs.image(i)
-            if img is None:
+        for clip, fs in clips:
+            dur = clip.duration_ms or 1000.0
+            cx0 = self.ms_to_x(clip.offset_ms)
+            cx1 = self.ms_to_x(clip.offset_ms + dur)
+            if cx1 < vis0 or cx0 > vis1:
                 continue
-            x = self.ms_to_x(fs.time_of(i))
-            xn = self.ms_to_x(fs.time_of(i + 1)) if i + 1 < fs.count else x + fs.step_ms * st.px_per_ms
-            cell = max(1.0, xn - x)
-            img_w = sw * scale
-            src_x, src_w = 0.0, float(sw)
-            if img_w > cell:                       # 横向居中裁剪，避免拉伸变形
-                src_w = sw * (cell / img_w)
-                src_x = (sw - src_w) * 0.5
-                img_w = cell
-            p.drawImage(QRectF(x, y0, img_w, hh), img, QRectF(src_x, 0.0, src_w, float(sh)))
+            rect = QRectF(cx0, y0 + 1.0, max(2.0, cx1 - cx0), hh - 2.0)
+            # 视频片段：把胶片条贴进块里
+            if fs is not None and getattr(fs, "count", 0):
+                sw, sh = fs.thumb_w, fs.thumb_h
+                scale = (hh - 2.0) / max(1, sh)
+                a = max(0, int((self.x_to_ms(vis0) - clip.offset_ms + clip.src_start_ms) / max(1.0, fs.step_ms)) - 1)
+                b = min(fs.count - 1, int((self.x_to_ms(vis1) - clip.offset_ms + clip.src_start_ms) / max(1.0, fs.step_ms)) + 1)
+                for i in range(a, b + 1):
+                    img = fs.image(i)
+                    if img is None:
+                        continue
+                    x = self.ms_to_x(clip.offset_ms + fs.time_of(i) - clip.src_start_ms)
+                    xn = (self.ms_to_x(clip.offset_ms + fs.time_of(i + 1) - clip.src_start_ms)
+                          if i + 1 < fs.count else x + fs.step_ms * st.px_per_ms)
+                    cell = max(1.0, min(xn, cx1) - max(x, cx0))
+                    if cell <= 0.5:
+                        continue
+                    img_w = sw * scale
+                    src_x, src_w = 0.0, float(sw)
+                    if img_w > cell:
+                        src_w = sw * (cell / img_w)
+                        src_x = (sw - src_w) * 0.5
+                        img_w = cell
+                    p.drawImage(QRectF(max(x, cx0), y0 + 1.0, img_w, hh - 2.0), img,
+                                QRectF(src_x, 0.0, src_w, float(sh)))
+            # 外框 + 名字
+            tint = QColor(30, 90, 140, 120) if clip.kind == "video" else QColor(30, 110, 80, 120)
+            edge = QColor("#7ec8ff") if clip.kind == "video" else QColor("#5fe0a0")
+            if not clip.has_audio:
+                edge = QColor("#c0c0c0")
+            p.setBrush(QBrush(tint))
+            p.setPen(QPen(edge, 1.2))
+            p.drawRoundedRect(rect, 3, 3)
+            if rect.width() > 46:
+                p.setFont(self._small)
+                p.setPen(QColor(16, 22, 28, 210))
+                label_rect = QRectF(rect.left() + 4, rect.top() + 2, min(rect.width() - 8, 240), 14)
+                p.setPen(Qt.NoPen)
+                p.setBrush(QBrush(QColor(235, 244, 252, 215)))
+                p.drawRoundedRect(label_rect, 2, 2)
+                p.setPen(QColor("#16202a"))
+                icon = "🎬" if clip.kind == "video" else "♪"
+                p.drawText(label_rect.adjusted(4, 0, -3, 0), Qt.AlignVCenter | Qt.AlignLeft,
+                           f"{icon} {clip.label}")
         p.setRenderHint(QPainter.SmoothPixmapTransform, False)
         p.setPen(QPen(QColor("#39414b")))
         p.drawLine(QPointF(0, y0), QPointF(w, y0))
