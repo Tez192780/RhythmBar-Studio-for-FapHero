@@ -46,6 +46,7 @@ from ..model import Note, Project
 from ..settings import AppSettings
 from ..tasks import Task
 from ..timing import BpmSegment
+from ..updater import PAGE as RELEASES_PAGE
 from .dialogs import AutoNotesDialog, BpmSegmentDialog, FillRangeDialog, TapTempoDialog
 from .panels import ChartPanel, ExportPanel, NoteTypePanel, SettingsPanel, StylePanel
 from .preview import PreviewWidget, RefFrameWidget, SpectrumWidget
@@ -340,8 +341,6 @@ class MainWindow(QMainWindow):
         m_tool.addAction(act("在播放头插入 BPM 段…", lambda: self.panel_chart.add_segment()))
 
         m_help = self.menuBar().addMenu("帮助")
-        m_help.addAction(act("检查更新…", lambda: self.check_updates(auto=False)))
-        m_help.addSeparator()
         m_help.addAction(act("快捷键与用法", self.show_help))
         m_help.addAction(act("关于", self.show_about))
 
@@ -359,6 +358,11 @@ class MainWindow(QMainWindow):
             m_lang.addAction(a)
             self.lang_actions[code] = a
         self.menu_lang = m_lang
+
+        # 「检查更新」单独作菜单栏顶层一项，点一下直接查
+        self.a_check_update = act("检查更新", lambda: self.check_updates(auto=False),
+                                  "Ctrl+U", "检查 GitHub 上有没有新版本")
+        self.menuBar().addAction(self.a_check_update)
 
         # 工具栏按钮
         tb.addAction(a_audio)
@@ -1629,6 +1633,12 @@ class MainWindow(QMainWindow):
         """查 GitHub Releases 有没有新版本；auto=True 时静默失败、只在有更新时弹窗。"""
         if auto and not getattr(self.settings, "check_updates", True):
             return
+        if auto:
+            import time as _t
+
+            last = float(getattr(self.settings, "last_update_check", 0.0) or 0.0)
+            if _t.time() - last < 6 * 3600:       # 6 小时内不重复打扰 GitHub
+                return
         if self._update_task is not None:
             return
         from ..updater import fetch_latest, is_newer
@@ -1638,8 +1648,15 @@ class MainWindow(QMainWindow):
         if not auto:
             self.statusBar().showMessage("正在检查更新…")
 
+        def stamp() -> None:
+            import time as _t
+
+            self.settings.last_update_check = _t.time()
+            self.settings.save()
+
         def done(res) -> None:
             self._update_task = None
+            stamp()
             if not res or res.get("none"):
                 if not auto:
                     self._info("检查更新", "作者还没有发布任何 Release。\n（仓库一直在更新代码，可以关注 commit）")
@@ -1652,9 +1669,21 @@ class MainWindow(QMainWindow):
 
         def failed(msg: str) -> None:
             self._update_task = None
+            stamp()                           # 失败也记时间，别一直重试
             if auto:
                 return                        # 自动检查失败就静默，不打扰
-            self._info("检查更新失败", str(msg))
+            box = QMessageBox(self)
+            box.setWindowTitle("检查更新失败")
+            box.setIcon(QMessageBox.Warning)
+            box.setText(str(msg))
+            box.setInformativeText("也可以直接打开 Releases 页面手动看看。")
+            b_open = box.addButton("打开 Releases 页面", QMessageBox.AcceptRole)
+            box.addButton("好", QMessageBox.RejectRole)
+            box.exec()
+            if box.clickedButton() is b_open:
+                import webbrowser
+
+                webbrowser.open(RELEASES_PAGE)
 
         task.done.connect(done)
         task.failed.connect(failed)
@@ -1680,8 +1709,7 @@ class MainWindow(QMainWindow):
         if box.clickedButton() is b_open:
             import webbrowser
 
-            webbrowser.open(res.get("url") or
-                            "https://github.com/Tez192780/RhythmBar-Studio-for-FapHero/releases")
+            webbrowser.open(res.get("url") or RELEASES_PAGE)
 
     # ================================================================ 帮助
     def show_help(self) -> None:

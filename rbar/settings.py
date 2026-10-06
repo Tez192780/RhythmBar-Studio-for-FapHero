@@ -23,6 +23,7 @@ class AppSettings:
         self.tap_min_ms: float = float(g("tap_min_ms", 90.0) or 90.0)
         self.language: str = str(g("language", "zh") or "zh")
         self.check_updates: bool = str(g("check_updates", "true")).lower() in ("true", "1")
+        self.last_update_check: float = float(g("last_update_check", 0.0) or 0.0)
         self.last_dir: str = str(g("last_dir", os.path.expanduser("~")) or "")
         recent = g("recent", [])
         if isinstance(recent, str):
@@ -41,6 +42,7 @@ class AppSettings:
         s.setValue("tap_min_ms", self.tap_min_ms)
         s.setValue("language", self.language)
         s.setValue("check_updates", "true" if self.check_updates else "false")
+        s.setValue("last_update_check", float(self.last_update_check))
         s.setValue("last_dir", self.last_dir)
         s.setValue("recent", self.recent[:12])
         s.setValue("show_safe", "true" if self.show_safe else "false")

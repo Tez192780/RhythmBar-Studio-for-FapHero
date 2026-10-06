@@ -340,6 +340,12 @@ _TABLE: dict[str, tuple[str, str]] = {
     "发现新版本": ("新しいバージョンがあります", "New version available"),
     "打开下载页": ("ダウンロードページを開く", "Open download page"),
     "以后再说": ("後で", "Later"),
+    "检查 GitHub 上有没有新版本": ("GitHub に新しい版がないか確認", "Check GitHub for a new version"),
+    "打开 Releases 页面": ("Releases ページを開く", "Open the Releases page"),
+    "也可以直接打开 Releases 页面手动看看。": (
+        "Releases ページを直接開いて確認することもできます。",
+        "You can also open the Releases page and check manually."),
+    "好": ("OK", "OK"),
 }
 
 

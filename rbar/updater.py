@@ -1,14 +1,25 @@
-"""检查 GitHub Releases 是否有新版本（只用标准库 urllib，不引入新依赖）。"""
+"""检查 GitHub Releases 有没有新版本（只用标准库，不引入新依赖）。
+
+两条路：
+1. GitHub API（能拿到附件列表，但**未登录时每 IP 每小时只有 60 次**，会 403）
+2. releases.atom 订阅源（不走 API 配额，只有标签/时间和说明）
+所以先试 API，被限流或失败就自动回退到 atom。
+"""
 
 from __future__ import annotations
 
+import html
 import json
+import re
 import urllib.error
 import urllib.request
+import xml.etree.ElementTree as ET
 
 REPO = "Tez192780/RhythmBar-Studio-for-FapHero"
 API = f"https://api.github.com/repos/{REPO}/releases/latest"
+ATOM = f"https://github.com/{REPO}/releases.atom"
 PAGE = f"https://github.com/{REPO}/releases"
+UA = "RhythmBar-Studio-Updater"
 
 
 def parse_version(text: str) -> tuple:
@@ -31,39 +42,83 @@ def is_newer(latest: str, current: str) -> bool:
     return parse_version(latest) > parse_version(current)
 
 
-def fetch_latest(timeout: float = 8.0) -> dict:
-    """取最新 release；没有 release / 网络不通都返回 {}。"""
-    req = urllib.request.Request(
-        API,
-        headers={
-            "User-Agent": "RhythmBar-Studio-Updater",
-            "Accept": "application/vnd.github+json",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            data = json.loads(r.read().decode("utf-8", "replace"))
-    except urllib.error.HTTPError as e:
-        if e.code == 404:          # 还没有发布过 release
-            return {"none": True}
-        raise RuntimeError(f"GitHub 返回 {e.code}") from e
-    except Exception as e:  # noqa: BLE001
-        raise RuntimeError(f"连不上 GitHub：{e}") from e
+def _get(url: str, timeout: float, accept: str) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": accept})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+
+def _strip_html(text: str) -> str:
+    text = re.sub(r"<br\s*/?>", "\n", text or "", flags=re.I)
+    text = re.sub(r"</p>", "\n", text, flags=re.I)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = html.unescape(text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def fetch_via_api(timeout: float) -> dict:
+    raw = _get(API, timeout, "application/vnd.github+json")
+    data = json.loads(raw.decode("utf-8", "replace"))
     name = str(data.get("name") or data.get("tag_name") or "")
-    body = str(data.get("body") or "")
-    assets = []
-    for a in data.get("assets") or []:
-        assets.append({
-            "name": str(a.get("name") or ""),
-            "size": int(a.get("size") or 0),
-            "url": str(a.get("browser_download_url") or ""),
-        })
+    assets = [{
+        "name": str(a.get("name") or ""),
+        "size": int(a.get("size") or 0),
+        "url": str(a.get("browser_download_url") or ""),
+    } for a in (data.get("assets") or [])]
     return {
         "tag": str(data.get("tag_name") or ""),
         "name": name,
-        "body": body,
+        "body": str(data.get("body") or ""),
         "url": str(data.get("html_url") or PAGE),
         "published": str(data.get("published_at") or ""),
         "prerelease": bool(data.get("prerelease")),
         "assets": assets,
+        "source": "api",
     }
+
+
+def fetch_via_atom(timeout: float) -> dict:
+    """releases.atom：不吃 API 配额，限流时用它兜底（拿不到附件列表）。"""
+    raw = _get(ATOM, timeout, "application/atom+xml").decode("utf-8", "replace")
+    root = ET.fromstring(raw)
+    ns = {"a": "http://www.w3.org/2005/Atom"}
+    entry = root.find("a:entry", ns)
+    if entry is None:
+        return {"none": True}
+    tag = _strip_html(entry.findtext("a:title", "", ns))
+    url = PAGE
+    for link in entry.findall("a:link", ns):
+        if link.get("rel") == "alternate" and link.get("href"):
+            url = link.get("href") or PAGE
+            break
+    return {
+        "tag": tag,
+        "name": tag,
+        "body": _strip_html(entry.findtext("a:content", "", ns)),
+        "url": url,
+        "published": entry.findtext("a:updated", "", ns),
+        "prerelease": False,
+        "assets": [],
+        "source": "atom",
+    }
+
+
+def fetch_latest(timeout: float = 8.0) -> dict:
+    """取最新 release；没有 release 返回 {'none': True}；两条路都失败才抛错。"""
+    err: Exception | None = None
+    try:
+        return fetch_via_api(timeout)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return {"none": True}            # 还没发过 Release
+        err = e
+    except Exception as e:  # noqa: BLE001
+        err = e
+    try:
+        return fetch_via_atom(timeout)       # 回退：atom 不吃 API 配额
+    except Exception as e2:  # noqa: BLE001
+        if getattr(err, "code", None) in (403, 429):
+            raise RuntimeError(
+                "GitHub 接口调用次数用完了（未登录每小时 60 次），"
+                "订阅源也没取到。稍后再试，或直接打开 Releases 页面看。") from e2
+        raise RuntimeError(f"连不上 GitHub：{e2}") from e2
