@@ -77,6 +77,23 @@ def fetch_via_api(timeout: float) -> dict:
     }
 
 
+def _tag_from_atom(entry, ns, title: str) -> str:
+    """atom 里 <title> 是 Release 名字（可能不含版本号），标签在 link/id 里。
+
+    例：link href=".../releases/tag/v0.991"、id="tag:github.com,2008:Repository/1/v0.991"
+    """
+    for link in entry.findall("a:link", ns):
+        href = link.get("href") or ""
+        if "/releases/tag/" in href:
+            return href.rsplit("/releases/tag/", 1)[1].strip() or title
+    eid = entry.findtext("a:id", "", ns)
+    if eid:
+        tail = eid.rsplit("/", 1)[-1].strip()
+        if tail and any(ch.isdigit() for ch in tail):
+            return tail
+    return title
+
+
 def fetch_via_atom(timeout: float) -> dict:
     """releases.atom：不吃 API 配额，限流时用它兜底（拿不到附件列表）。"""
     raw = _get(ATOM, timeout, "application/atom+xml").decode("utf-8", "replace")
@@ -85,7 +102,8 @@ def fetch_via_atom(timeout: float) -> dict:
     entry = root.find("a:entry", ns)
     if entry is None:
         return {"none": True}
-    tag = _strip_html(entry.findtext("a:title", "", ns))
+    title = _strip_html(entry.findtext("a:title", "", ns))
+    tag = _tag_from_atom(entry, ns, title)
     url = PAGE
     for link in entry.findall("a:link", ns):
         if link.get("rel") == "alternate" and link.get("href"):
@@ -93,7 +111,7 @@ def fetch_via_atom(timeout: float) -> dict:
             break
     return {
         "tag": tag,
-        "name": tag,
+        "name": title or tag,
         "body": _strip_html(entry.findtext("a:content", "", ns)),
         "url": url,
         "published": entry.findtext("a:updated", "", ns),
