@@ -329,6 +329,17 @@ _TABLE: dict[str, tuple[str, str]] = {
     "把循环终点设到这里": ("リピート終了をここに", "Set loop end here"),
     "长条延长一小节": ("長押しを1小節延ばす", "Extend hold by 1 bar"),
     "长条缩短一小节": ("長押しを1小節縮める", "Shorten hold by 1 bar"),
+    # ------------------------------------------------- 粘贴 / 检查更新
+    "粘贴到这里 (Ctrl+V)": ("ここに貼り付け (Ctrl+V)", "Paste here (Ctrl+V)"),
+    "粘贴到播放头": ("再生位置に貼り付け", "Paste at playhead"),
+    "粘贴 (Ctrl+V，落在鼠标处)": ("貼り付け (Ctrl+V・マウス位置)", "Paste (Ctrl+V, at cursor)"),
+    "检查更新…": ("アップデートを確認…", "Check for Updates…"),
+    "正在检查更新…": ("アップデートを確認中…", "Checking for updates…"),
+    "检查更新": ("アップデートの確認", "Check for Updates"),
+    "检查更新失败": ("アップデート確認に失敗", "Update check failed"),
+    "发现新版本": ("新しいバージョンがあります", "New version available"),
+    "打开下载页": ("ダウンロードページを開く", "Open download page"),
+    "以后再说": ("後で", "Later"),
 }
 
 

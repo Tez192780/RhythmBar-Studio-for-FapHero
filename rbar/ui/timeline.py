@@ -88,9 +88,10 @@ class TimelineWidget(QWidget):
     bpmAddRequested = Signal(float)       # 在此时间加 BPM 段
     notesChanged = Signal()               # 谱面结构变化（需要刷新预览）
     copyRequested = Signal()
-    pasteRequested = Signal()             # 粘贴到播放头
+    pasteRequested = Signal(float, int)   # 粘贴到这里：(时间ms, 行号；-1=保持原来的行)
     duplicateRequested = Signal()         # 向后复制一份
     selectAllRequested = Signal()
+    pasteAtPlayheadRequested = Signal()
     fillRequested = Signal(float)         # 从某个时间点开始区间填充
     loopChanged = Signal()                # 循环区间被改（同步 UI 勾选状态）
 
@@ -122,6 +123,9 @@ class TimelineWidget(QWidget):
         self._paint_anchor = 0.0
         self._paint_count = 0
         self._range_anchor = 0.0
+        self._mouse_ms = 0.0            # 鼠标在时间轴上的时间/行（粘贴用）
+        self._mouse_row = -1
+        self._clipboard_has = False
         self._drag_orig: dict[int, tuple[float, int, float]] = {}
         self._rubber: QRect | None = None
         self._ruler_font = QFont("Consolas", 8)
@@ -1089,6 +1093,9 @@ class TimelineWidget(QWidget):
 
     def mouseMoveEvent(self, ev) -> None:  # noqa: N802
         pos = ev.position().toPoint()
+        self._mouse_ms = max(0.0, self.x_to_ms(pos.x()))
+        self._mouse_row = (self.row_at(pos.y())
+                           if self._rows_top() <= pos.y() < self._rows_bottom() else -1)
         st = self.doc.state
         if self._mode == "pan":
             st.view_t0 = self._press_ms - (pos.x() - self._press_pos.x()) / max(1e-6, st.px_per_ms)
@@ -1305,7 +1312,9 @@ class TimelineWidget(QWidget):
             menu.addSeparator()
             menu.addAction(tr("量化到网格"), lambda: self._quantize())
             menu.addAction(tr("复制 (Ctrl+C)"), self._copy)
-            menu.addAction(tr("粘贴到播放头 (Ctrl+V)"), self._paste)
+            menu.addAction(tr("粘贴到这里 (Ctrl+V)"),
+                           lambda: self._paste_at(pos))
+            menu.addAction(tr("粘贴到播放头"), self.pasteAtPlayheadRequested.emit)
             menu.addAction(tr("向后复制一份 (Ctrl+D)"), self.duplicateRequested.emit)
             menu.addAction(tr("删除 (Del)"), self._delete_selected)
             menu.addSeparator()
@@ -1315,7 +1324,8 @@ class TimelineWidget(QWidget):
             ms = self.snap(max(0.0, self.x_to_ms(pos.x())))
             row = self.row_at(pos.y())
             if has_clip:
-                menu.addAction(tr("粘贴到播放头 (Ctrl+V)"), self._paste)
+                menu.addAction(tr("粘贴到这里 (Ctrl+V)"), lambda: self._paste_at(pos))
+                menu.addAction(tr("粘贴到播放头"), self.pasteAtPlayheadRequested.emit)
                 menu.addSeparator()
             menu.addAction(tr("在此添加音符"), lambda: self._add_at(ms, row))
             menu.addAction(tr("从这一点开始填充音符…"), lambda: self.fillRequested.emit(ms))
@@ -1327,8 +1337,11 @@ class TimelineWidget(QWidget):
         menu.exec(self.mapToGlobal(pos))
 
     # -- 菜单动作
-    def _paste(self) -> None:
-        self.pasteRequested.emit()
+    def _paste_at(self, pos: QPoint) -> None:
+        """粘贴到右键点的地方（时间 + 行，整块跟着挪到那一行）。"""
+        ms = max(0.0, self.x_to_ms(pos.x()))
+        row = self.row_at(pos.y()) if self._rows_top() <= pos.y() < self._rows_bottom() else -1
+        self.pasteRequested.emit(ms, row)
 
     def set_clipboard_state(self, has_clip: bool) -> None:
         """由主窗口告知剪贴板有没有内容（右键菜单据此决定是否显示"粘贴"）。"""

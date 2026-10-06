@@ -77,6 +77,7 @@ class MainWindow(QMainWindow):
         self._zoomed_once = False
         self.spec = None                 # 频谱图
         self._spec_task: Task | None = None
+        self._update_task: Task | None = None      # 检查更新
         self._media_mode = "replace"
         self._media_path = ""
         self._media_is_video = False
@@ -105,6 +106,8 @@ class MainWindow(QMainWindow):
         self.refresh_all()
         i18n.translate_tree(self)          # 按当前语言刷新整套界面
         self.statusBar().showMessage(i18n.tr("就绪：拖入音频 → 打点 → 导出透明视频"), 8000)
+        # 启动后延迟自动查一次更新（设置里可关；失败静默）
+        QTimer.singleShot(2500, lambda: self.check_updates(auto=True))
         if self.doc.project.path:
             self.setWindowTitle(f"{APP_NAME} — {os.path.basename(self.doc.project.path)}")
 
@@ -272,7 +275,7 @@ class MainWindow(QMainWindow):
         self.tool_group = grp
         a_selall = act("全选", self.select_all, "Ctrl+A")
         a_copy = act("复制 (Ctrl+C)", self.copy_notes)
-        a_paste = act("粘贴到播放头 (Ctrl+V)", self.paste_notes)
+        a_paste = act("粘贴 (Ctrl+V，落在鼠标处)", self.paste_notes)
         a_dup = act("向后复制一份 (Ctrl+D)", self.duplicate_forward)
         a_quant = act("量化到网格 (Ctrl+Q)", self.quantize_selection)
         a_mirror = act("镜像选中区间 (Ctrl+M)", self.mirror_selection)
@@ -337,6 +340,8 @@ class MainWindow(QMainWindow):
         m_tool.addAction(act("在播放头插入 BPM 段…", lambda: self.panel_chart.add_segment()))
 
         m_help = self.menuBar().addMenu("帮助")
+        m_help.addAction(act("检查更新…", lambda: self.check_updates(auto=False)))
+        m_help.addSeparator()
         m_help.addAction(act("快捷键与用法", self.show_help))
         m_help.addAction(act("关于", self.show_about))
 
@@ -389,7 +394,9 @@ class MainWindow(QMainWindow):
         self.timeline.bpmEditRequested.connect(self.edit_bpm_segment)
         self.timeline.bpmAddRequested.connect(self.add_bpm_segment_at)
         self.timeline.copyRequested.connect(self.copy_notes)
-        self.timeline.pasteRequested.connect(self.paste_notes)
+        self.timeline.pasteRequested.connect(
+            lambda ms, row: self.paste_notes(ms, None if row < 0 else row))
+        self.timeline.pasteAtPlayheadRequested.connect(self.paste_notes)
         self.timeline.duplicateRequested.connect(self.duplicate_forward)
         self.timeline.selectAllRequested.connect(self.select_all)
         self.timeline.fillRequested.connect(self.fill_range)
@@ -1001,17 +1008,38 @@ class MainWindow(QMainWindow):
         self.timeline.set_clipboard_state(True)
         self.statusBar().showMessage(f"已复制 {len(sel)} 个音符", 2000)
 
-    def paste_notes(self) -> None:
+    def paste_notes(self, at_ms: float | None = None, at_row: int | None = None) -> None:
+        """粘贴：默认落在鼠标处（没有鼠标位置就落播放头），可整块挪到别的音符行。
+
+        at_ms  目标时间（该时间对应复制块最早那个音符）
+        at_row 目标行号；给了就把整块音符挪到这一行（跨音符种类粘贴）
+        """
         if not self._clipboard:
             return
-        base = self.position_ms
+        rows = self.doc.project.theme.active_rows()
+        clip_rows = []
+        for d in self._clipboard:
+            t = str(d.get("type", ""))
+            clip_rows.append(rows.index(t) if t in rows else int(d.get("lane", 0)))
+        top = min(clip_rows) if clip_rows else 0
+        if at_ms is None:
+            tl = self.timeline
+            at_ms = getattr(tl, "_mouse_ms", None) or self.position_ms
+            if at_row is None:
+                r = getattr(tl, "_mouse_row", -1)
+                at_row = None if r < 0 else r
+        d_row = 0 if at_row is None else (int(at_row) - top)
+        base = float(at_ms)
         added = []
         before = self.doc.snapshot()
 
         def fn():
-            for d in self._clipboard:
+            for d, crow in zip(self._clipboard, clip_rows):
                 n = Note.from_dict(d)
-                n.t = base + (n.t - self._clip_anchor)
+                n.t = max(0.0, base + (n.t - self._clip_anchor))
+                if at_row is not None and rows:
+                    n.lane = max(0, min(len(rows) - 1, crow + d_row))
+                    n.type = rows[n.lane]
                 self.doc.project.chart.add(n)
                 added.append(n)
 
@@ -1595,6 +1623,65 @@ class MainWindow(QMainWindow):
                 self._open_folder(os.path.dirname(os.path.abspath(path)))
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "导出失败", str(e))
+
+    # ============================================================ 检查更新
+    def check_updates(self, auto: bool = False) -> None:
+        """查 GitHub Releases 有没有新版本；auto=True 时静默失败、只在有更新时弹窗。"""
+        if auto and not getattr(self.settings, "check_updates", True):
+            return
+        if self._update_task is not None:
+            return
+        from ..updater import fetch_latest, is_newer
+
+        task = Task(fetch_latest, parent=self)
+        self._update_task = task
+        if not auto:
+            self.statusBar().showMessage("正在检查更新…")
+
+        def done(res) -> None:
+            self._update_task = None
+            if not res or res.get("none"):
+                if not auto:
+                    self._info("检查更新", "作者还没有发布任何 Release。\n（仓库一直在更新代码，可以关注 commit）")
+                return
+            tag = str(res.get("tag", ""))
+            if is_newer(tag, __version__):
+                self._show_update_dialog(res)
+            elif not auto:
+                self._info("检查更新", f"已是最新版（v{__version__}）。\n最新 Release：{tag or '—'}")
+
+        def failed(msg: str) -> None:
+            self._update_task = None
+            if auto:
+                return                        # 自动检查失败就静默，不打扰
+            self._info("检查更新失败", str(msg))
+
+        task.done.connect(done)
+        task.failed.connect(failed)
+        task.start()
+
+    def _show_update_dialog(self, res: dict) -> None:
+        tag = res.get("tag") or res.get("name") or "?"
+        body = (res.get("body") or "").strip()
+        if len(body) > 1000:
+            body = body[:1000] + "…"
+        assets = res.get("assets") or []
+        names = "、".join(a["name"] for a in assets[:5] if a.get("name"))
+        if names:
+            body += f"\n\n发布附件：{names}"
+        box = QMessageBox(self)
+        box.setWindowTitle("发现新版本")
+        box.setIcon(QMessageBox.Information)
+        box.setText(f"有新版本可用：{tag}（当前 v{__version__}）")
+        box.setInformativeText(body or "点「打开下载页」到 GitHub 查看。")
+        b_open = box.addButton("打开下载页", QMessageBox.AcceptRole)
+        box.addButton("以后再说", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is b_open:
+            import webbrowser
+
+            webbrowser.open(res.get("url") or
+                            "https://github.com/Tez192780/RhythmBar-Studio-for-FapHero/releases")
 
     # ================================================================ 帮助
     def show_help(self) -> None:
