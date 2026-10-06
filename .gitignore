@@ -22,3 +22,13 @@ venv/
 Thumbs.db
 desktop.ini
 *.log
+
+# Windows 偶尔会在「当前目录」下建出没展开变量的字面量目录
+# （跑新 exe 时冒出来的图标缓存 %SystemDrive%\ProgramData\Microsoft\Windows\Caches）
+%SystemDrive%/
+%SystemRoot%/
+%ProgramData%/
+%LOCALAPPDATA%/
+%APPDATA%/
+%TEMP%/
+%*
