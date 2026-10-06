@@ -1748,7 +1748,7 @@ class MainWindow(QMainWindow):
             "  Ctrl+A 全选　Ctrl+C/V 复制/粘贴到播放头　Ctrl+D 向后复制\n"
             "  数字 1~9 切换音符类型　Q/W 上下换行　L 设循环　M 节拍器\n"
             "  Ctrl+0 缩放适应　Ctrl+E 导出视频　Ctrl+Shift+E 导出当前帧 PNG\n"
-            "  Ctrl+Shift+V 导入参考视频")
+            "  Ctrl+Shift+V 导入参考视频　Ctrl+U 检查更新（菜单栏顶上那一项）")
 
     def show_about(self) -> None:
         QMessageBox.about(
