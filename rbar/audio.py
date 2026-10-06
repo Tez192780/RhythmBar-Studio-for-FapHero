@@ -627,13 +627,25 @@ class AudioEngine(QObject):
         self.finished.emit()
 
     def shutdown(self) -> None:
-        """退出程序时收线程。"""
+        """退出程序时收线程。
+
+        坑：QThread 还在跑就被销毁，Qt 会直接 qFatal（Windows 上是 0xC0000409），
+        表现是「关窗口时弹崩溃框」。所以退出前一定要 quit + wait。
+        """
+        th, self._thread = getattr(self, "_thread", None), None
+        if th is None:
+            return
         try:
             self._cmdStop.emit()
         except Exception:
             pass
-        self._thread.quit()
-        self._thread.wait(1500)
+        try:
+            th.quit()
+            if not th.wait(2000):
+                th.terminate()
+                th.wait(500)
+        except Exception:
+            pass
 
 
 def _sink_is_idle(sink) -> bool:

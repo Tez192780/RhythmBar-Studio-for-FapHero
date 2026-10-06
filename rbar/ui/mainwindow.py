@@ -1879,10 +1879,22 @@ class MainWindow(QMainWindow):
                 self.open_path(p)
             break
 
+    def shutdown(self) -> None:
+        """退出前收尾：停播放、收音频线程（不收的话关窗口会弹崩溃框）。"""
+        try:
+            self.pause()
+        except Exception:
+            pass
+        try:
+            self.engine.shutdown()
+        except Exception:
+            pass
+
     def closeEvent(self, ev) -> None:  # noqa: N802
         self.pause()
         if not self._confirm_discard():
             ev.ignore()
             return
         self.settings.save()
+        self.engine.shutdown()             # 音频线程必须在这里收掉
         ev.accept()

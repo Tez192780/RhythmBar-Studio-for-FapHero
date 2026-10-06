@@ -130,8 +130,11 @@ def main(argv: list[str] | None = None) -> int:
 
         QTimer.singleShot(int(ms), app.quit)
 
+    app.aboutToQuit.connect(win.shutdown)  # 收音频线程，否则退出时 Qt 会 abort
     tune_gc()
-    return app.exec()
+    code = app.exec()
+    del win                                # 窗口先于 QApplication 释放
+    return code
 
 
 if __name__ == "__main__":
