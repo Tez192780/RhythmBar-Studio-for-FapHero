@@ -88,6 +88,9 @@ class TimelineWidget(QWidget):
     bpmAddRequested = Signal(float)       # 在此时间加 BPM 段
     notesChanged = Signal()               # 谱面结构变化（需要刷新预览）
     copyRequested = Signal()
+    pasteRequested = Signal()             # 粘贴到播放头
+    duplicateRequested = Signal()         # 向后复制一份
+    selectAllRequested = Signal()
     fillRequested = Signal(float)         # 从某个时间点开始区间填充
     loopChanged = Signal()                # 循环区间被改（同步 UI 勾选状态）
 
@@ -1269,23 +1272,24 @@ class TimelineWidget(QWidget):
         chart = self.doc.project.chart
         st = self.doc.state
         menu = QMenu(self)
+        has_clip = bool(getattr(self, "_clipboard_has", False))
         if st.has_range():
-            menu.addAction("在这个区间填充音符…",
+            menu.addAction(tr("在这个区间填充音符…"),
                            lambda: self.fillRequested.emit(st.sel_t0))
-            menu.addAction("把区间设为循环区间", self._range_to_loop)
-            menu.addAction("清除区间选择", self._clear_range)
+            menu.addAction(tr("把区间设为循环区间"), self._range_to_loop)
+            menu.addAction(tr("清除区间选择"), self._clear_range)
             menu.addSeparator()
         if st.loop_on and st.loop_b > st.loop_a:
-            menu.addAction("清除循环区间", self._clear_loop)
+            menu.addAction(tr("清除循环区间"), self._clear_loop)
             menu.addSeparator()
         if pos.y() <= BPM_H:
             ms = self.snap(max(0.0, self.x_to_ms(pos.x())))
-            menu.addAction("在此处添加 BPM 段…", lambda: self.bpmAddRequested.emit(ms))
+            menu.addAction(tr("在此处添加 BPM 段…"), lambda: self.bpmAddRequested.emit(ms))
             idx = self._bpm_at(pos)
             segs = chart.timemap.segments
             if 0 < idx < len(segs):
-                menu.addAction("编辑此 BPM 段…", lambda: self.bpmEditRequested.emit(idx))
-                menu.addAction("删除此 BPM 段", lambda: self._remove_segment(idx))
+                menu.addAction(tr("编辑此 BPM 段…"), lambda: self.bpmEditRequested.emit(idx))
+                menu.addAction(tr("删除此 BPM 段"), lambda: self._remove_segment(idx))
             menu.exec(self.mapToGlobal(pos))
             return
 
@@ -1294,28 +1298,41 @@ class TimelineWidget(QWidget):
             self.doc.set_selection([note])
         sel = list(self.doc.selection)
         if sel:
-            type_menu = menu.addMenu("改成类型")
+            type_menu = menu.addMenu(tr("改成类型"))
             for i, key in enumerate(self.rows()):
-                st = self.doc.project.theme.style(key)
-                type_menu.addAction(f"{i + 1}. {st.name}", lambda k=key: self._set_type(k))
+                sty = self.doc.project.theme.style(key)
+                type_menu.addAction(f"{i + 1}. {sty.name}", lambda k=key: self._set_type(k))
             menu.addSeparator()
-            menu.addAction("量化到网格", lambda: self._quantize())
-            menu.addAction("复制 (Ctrl+C)", self._copy)
-            menu.addAction("删除 (Del)", self._delete_selected)
+            menu.addAction(tr("量化到网格"), lambda: self._quantize())
+            menu.addAction(tr("复制 (Ctrl+C)"), self._copy)
+            menu.addAction(tr("粘贴到播放头 (Ctrl+V)"), self._paste)
+            menu.addAction(tr("向后复制一份 (Ctrl+D)"), self.duplicateRequested.emit)
+            menu.addAction(tr("删除 (Del)"), self._delete_selected)
             menu.addSeparator()
-            menu.addAction("长条延长一小节", lambda: self._extend_hold(1))
-            menu.addAction("长条缩短一小节", lambda: self._extend_hold(-1))
+            menu.addAction(tr("长条延长一小节"), lambda: self._extend_hold(1))
+            menu.addAction(tr("长条缩短一小节"), lambda: self._extend_hold(-1))
         else:
             ms = self.snap(max(0.0, self.x_to_ms(pos.x())))
             row = self.row_at(pos.y())
-            menu.addAction("在此添加音符", lambda: self._add_at(ms, row))
-            menu.addAction("从这一点开始填充音符…", lambda: self.fillRequested.emit(ms))
+            if has_clip:
+                menu.addAction(tr("粘贴到播放头 (Ctrl+V)"), self._paste)
+                menu.addSeparator()
+            menu.addAction(tr("在此添加音符"), lambda: self._add_at(ms, row))
+            menu.addAction(tr("从这一点开始填充音符…"), lambda: self.fillRequested.emit(ms))
             menu.addSeparator()
-            menu.addAction("把循环起点设到这里", lambda: self._set_loop("a", ms))
-            menu.addAction("把循环终点设到这里", lambda: self._set_loop("b", ms))
+            menu.addAction(tr("全选"), self.selectAllRequested.emit)
+            menu.addSeparator()
+            menu.addAction(tr("把循环起点设到这里"), lambda: self._set_loop("a", ms))
+            menu.addAction(tr("把循环终点设到这里"), lambda: self._set_loop("b", ms))
         menu.exec(self.mapToGlobal(pos))
 
     # -- 菜单动作
+    def _paste(self) -> None:
+        self.pasteRequested.emit()
+
+    def set_clipboard_state(self, has_clip: bool) -> None:
+        """由主窗口告知剪贴板有没有内容（右键菜单据此决定是否显示"粘贴"）。"""
+        self._clipboard_has = bool(has_clip)
     def _set_type(self, key: str) -> None:
         rows = self.rows()
         lane = rows.index(key) if key in rows else 0

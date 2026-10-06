@@ -1,6 +1,8 @@
 # 自检/开发产物（本地保留，不进仓库）
+devtools/
 build/
 dist/
+*.spec
 *.egg-info/
 
 # Python

@@ -389,6 +389,9 @@ class MainWindow(QMainWindow):
         self.timeline.bpmEditRequested.connect(self.edit_bpm_segment)
         self.timeline.bpmAddRequested.connect(self.add_bpm_segment_at)
         self.timeline.copyRequested.connect(self.copy_notes)
+        self.timeline.pasteRequested.connect(self.paste_notes)
+        self.timeline.duplicateRequested.connect(self.duplicate_forward)
+        self.timeline.selectAllRequested.connect(self.select_all)
         self.timeline.fillRequested.connect(self.fill_range)
         self.timeline.loopChanged.connect(lambda: self.chk_loop.setChecked(True))
         self.preview.seekRequested.connect(self.seek)
@@ -995,6 +998,7 @@ class MainWindow(QMainWindow):
             return
         self._clipboard = [n.to_dict() for n in sel]
         self._clip_anchor = sel[0].t
+        self.timeline.set_clipboard_state(True)
         self.statusBar().showMessage(f"已复制 {len(sel)} 个音符", 2000)
 
     def paste_notes(self) -> None:

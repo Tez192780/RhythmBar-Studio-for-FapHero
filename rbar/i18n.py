@@ -313,6 +313,22 @@ _TABLE: dict[str, tuple[str, str]] = {
     "  选中 {n}": ("　選択 {n}", "  ·  {n} selected"),
     "界面 {a:.0f}/{b:.0f} fps": ("描画 {a:.0f}/{b:.0f} fps", "UI {a:.0f}/{b:.0f} fps"),
     "Hz": ("Hz", "Hz"),
+    # ------------------------------------------------------------ 右键菜单
+    "在这个区间填充音符…": ("この範囲にノーツを配置…", "Fill notes in this range…"),
+    "把区间设为循环区间": ("この範囲をリピートに設定", "Set range as loop"),
+    "清除区间选择": ("範囲選択を解除", "Clear range selection"),
+    "清除循环区间": ("リピートを解除", "Clear loop"),
+    "在此处添加 BPM 段…": ("ここに BPM 区間を追加…", "Add BPM segment here…"),
+    "编辑此 BPM 段…": ("この BPM 区間を編集…", "Edit this BPM segment…"),
+    "删除此 BPM 段": ("この BPM 区間を削除", "Delete this BPM segment"),
+    "改成类型": ("種類を変更", "Change type"),
+    "量化到网格": ("グリッドに量子化", "Quantize to grid"),
+    "在此添加音符": ("ここにノーツを追加", "Add note here"),
+    "从这一点开始填充音符…": ("ここからノーツを配置…", "Fill notes from here…"),
+    "把循环起点设到这里": ("リピート開始をここに", "Set loop start here"),
+    "把循环终点设到这里": ("リピート終了をここに", "Set loop end here"),
+    "长条延长一小节": ("長押しを1小節延ばす", "Extend hold by 1 bar"),
+    "长条缩短一小节": ("長押しを1小節縮める", "Shorten hold by 1 bar"),
 }
 
 
