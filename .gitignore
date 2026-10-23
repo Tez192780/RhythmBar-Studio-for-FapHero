@@ -5,6 +5,12 @@ dist/
 *.spec
 *.egg-info/
 
+# 开发/维护用的启动器：只留本地。它们调的是 devtools 里的脚本，
+# 下载源码的人用不到；给用户的是 Start.bat / Install Python dependencies.bat / build_exe.bat
+Start-debug.bat
+Upload to GitHub.bat
+Publish Release.bat
+
 # Python
 __pycache__/
 *.py[cod]
