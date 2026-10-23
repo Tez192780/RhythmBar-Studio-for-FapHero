@@ -91,8 +91,7 @@ class TimelineWidget(QWidget):
     pasteRequested = Signal(float, int)   # 粘贴到这里：(时间ms, 行号；-1=保持原来的行)
     duplicateRequested = Signal()         # 向后复制一份
     selectAllRequested = Signal()
-    pasteAtPlayheadRequested = Signal()
-    fillRequested = Signal(float)         # 从某个时间点开始区间填充
+    fillRequested = Signal(float, float)  # 区间填充：(t0, t1)；t1<=t0 表示“从 t0 开始”
     loopChanged = Signal()                # 循环区间被改（同步 UI 勾选状态）
 
     def __init__(self, doc: Doc, parent=None):
@@ -341,7 +340,7 @@ class TimelineWidget(QWidget):
         return (
             round(st.px_per_ms, 9), self.width(), self.height(), st.show_waveform,
             st.snap_divisor, st.current_lane, tuple(rows),
-            tuple(th.style(k).color for k in rows),
+            tuple((th.style(k).name, th.style(k).color) for k in rows),
             tuple((round(s.time_ms, 4), round(s.bpm, 6)) for s in tm.segments),
             round(tm.offset_ms, 4), self._peaks is not None, round(self._dur_ms, 2),
             len(self._clips), st.show_video,
@@ -1256,6 +1255,7 @@ class TimelineWidget(QWidget):
             return
         st.loop_a, st.loop_b = st.sel_t0, st.sel_t1
         st.loop_on = True
+        st.loop_armed = False
         st.clear_range()          # 区间已经变成循环区间，别再叠一层高亮
         self.statusMessage.emit(
             f"循环区间：{fmt_time(st.loop_a)} → {fmt_time(st.loop_b)}"
@@ -1266,6 +1266,7 @@ class TimelineWidget(QWidget):
     def _clear_loop(self) -> None:
         st = self.doc.state
         st.loop_on = False
+        st.loop_armed = False
         st.loop_a = st.loop_b = 0.0
         self.statusMessage.emit("已清除循环区间")
         self.loopChanged.emit()
@@ -1282,7 +1283,7 @@ class TimelineWidget(QWidget):
         has_clip = bool(getattr(self, "_clipboard_has", False))
         if st.has_range():
             menu.addAction(tr("在这个区间填充音符…"),
-                           lambda: self.fillRequested.emit(st.sel_t0))
+                           lambda: self.fillRequested.emit(st.sel_t0, st.sel_t1))
             menu.addAction(tr("把区间设为循环区间"), self._range_to_loop)
             menu.addAction(tr("清除区间选择"), self._clear_range)
             menu.addSeparator()
@@ -1314,7 +1315,6 @@ class TimelineWidget(QWidget):
             menu.addAction(tr("复制 (Ctrl+C)"), self._copy)
             menu.addAction(tr("粘贴到这里 (Ctrl+V)"),
                            lambda: self._paste_at(pos))
-            menu.addAction(tr("粘贴到播放头"), self.pasteAtPlayheadRequested.emit)
             menu.addAction(tr("向后复制一份 (Ctrl+D)"), self.duplicateRequested.emit)
             menu.addAction(tr("删除 (Del)"), self._delete_selected)
             menu.addSeparator()
@@ -1325,10 +1325,9 @@ class TimelineWidget(QWidget):
             row = self.row_at(pos.y())
             if has_clip:
                 menu.addAction(tr("粘贴到这里 (Ctrl+V)"), lambda: self._paste_at(pos))
-                menu.addAction(tr("粘贴到播放头"), self.pasteAtPlayheadRequested.emit)
                 menu.addSeparator()
             menu.addAction(tr("在此添加音符"), lambda: self._add_at(ms, row))
-            menu.addAction(tr("从这一点开始填充音符…"), lambda: self.fillRequested.emit(ms))
+            menu.addAction(tr("从这一点开始填充音符…"), lambda: self.fillRequested.emit(ms, -1.0))
             menu.addSeparator()
             menu.addAction(tr("全选"), self.selectAllRequested.emit)
             menu.addSeparator()
@@ -1405,6 +1404,7 @@ class TimelineWidget(QWidget):
 
     def _set_loop(self, which: str, ms: float) -> None:
         st = self.doc.state
+        st.loop_armed = False
         if which == "a":
             st.loop_a = ms
         else:
@@ -1417,6 +1417,6 @@ class TimelineWidget(QWidget):
     def _remove_segment(self, idx: int) -> None:
         before = self.doc.snapshot()
         self.doc.project.chart.remove_segment(idx)
-        self.doc.undo_stack.push("删除 BPM 段", before, self.doc.snapshot())
+        self.doc.commit_external("删除 BPM 段", before)
         self.notesChanged.emit()
         self.update()

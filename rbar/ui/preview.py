@@ -76,13 +76,22 @@ class PreviewWidget(QWidget):
         p.setRenderHint(QPainter.Antialiasing, True)
         p.fillRect(self.rect(), QColor("#101215"))
         r = self._bar_rect()
-        p.fillRect(r, self._checker_brush())
         rs = self.doc.project.render
+        ex = self.doc.project.export
+        if ex.background == "black":
+            p.fillRect(r, QColor(0, 0, 0))
+        elif ex.background == "white":
+            p.fillRect(r, QColor(255, 255, 255))
+        elif ex.background == "color":
+            p.fillRect(r, QColor(ex.bg_color))
+        else:
+            p.fillRect(r, self._checker_brush())
         p.save()
         p.translate(r.topLeft())
         p.setClipRect(QRectF(0, 0, r.width(), r.height()))
         self._renderer.p = self.doc.project     # 工程可能被换过（打开/新建）
-        self._renderer.render(p, r.width(), r.height(), self.t_ms)
+        # clear=False：保留上面刚画的棋盘/实色背景，让半透明底板叠在上面
+        self._renderer.render(p, r.width(), r.height(), self.t_ms, clear=False)
         p.restore()
         if self._show_safe:
             p.setPen(QPen(QColor("#3a4048"), 1, Qt.DashLine))
@@ -231,6 +240,7 @@ class RefFrameWidget(QWidget):
         self.setMinimumWidth(180)
         self.setMinimumHeight(110)
         self._precise: dict[int, tuple[QImage, object]] = {}
+        self._last_precise_key = -1
         self._busy = False
         self._task = None
         self._timer = QTimer(self)
@@ -242,6 +252,9 @@ class RefFrameWidget(QWidget):
         self.clips = list(items or [])
         self.ffmpeg = ffmpeg or self.ffmpeg
         self._precise.clear()
+        self._last_precise_key = -1
+        if not self.playing and self.clips:
+            self._timer.start()
         self.update()
 
     def set_filmstrip(self, film, ffmpeg: str = "") -> None:
@@ -249,6 +262,9 @@ class RefFrameWidget(QWidget):
         self.clips = [] if film is None else [(film, film)]
         self.ffmpeg = ffmpeg or self.ffmpeg
         self._precise.clear()
+        self._last_precise_key = -1
+        if not self.playing and self.clips:
+            self._timer.start()
         self.update()
 
     def _active(self):
@@ -265,10 +281,16 @@ class RefFrameWidget(QWidget):
     def set_playhead(self, ms: float, playing: bool) -> None:
         self.t_ms = float(ms)
         self.playing = bool(playing)
-        if playing:
+        if self.playing:
             self._timer.stop()
+            self._last_precise_key = -1
         else:
-            self._timer.start()
+            key = int(self.t_ms // 40)
+            # 只有位置真的换了格子才重启计时器；主窗口每 16ms 调一次 set_playhead，
+            # 无脑 start() 会让 320ms 单次定时器永远不触发。
+            if key != self._last_precise_key:
+                self._last_precise_key = key
+                self._timer.start()
         self.update()
 
     # ---------------------------------------------------------- 精确取帧
@@ -297,7 +319,6 @@ class RefFrameWidget(QWidget):
         self._task.done.connect(lambda res, k=key: self._precise_done(k, res))
         self._task.failed.connect(lambda _m: self._precise_fail())
         self._task.start()
-        _ = probe_video
 
     def _precise_done(self, key: int, res) -> None:
         self._busy = False

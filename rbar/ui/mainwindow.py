@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import math
 import os
 import threading
 import time
@@ -38,7 +39,15 @@ from PySide6.QtWidgets import (
 
 from .. import APP_NAME, __version__
 from .. import i18n
-from ..audio import AudioEngine, decode_audio, detect_onsets, estimate_bpm, estimate_offset, peaks
+from ..audio import (
+    AudioEngine,
+    decode_audio,
+    detect_onsets,
+    estimate_bpm,
+    estimate_offset,
+    find_ffprobe,
+    peaks,
+)
 from ..demo import make_demo_project
 from ..doc import Doc
 from ..exporter import compute_range, export_still, export_video
@@ -79,12 +88,14 @@ class MainWindow(QMainWindow):
         self.spec = None                 # 频谱图
         self._spec_task: Task | None = None
         self._update_task: Task | None = None      # 检查更新
-        self._media_mode = "replace"
-        self._media_path = ""
         self._media_is_video = False
         self._media_info = None
         self._media_ainfo: dict = {}
-        self._tap_times: list[float] = []
+        self._last_tap_at = 0.0
+        self._last_ui_pos = -1.0
+        self._media_busy = False
+        self._spec_token = 0
+        self._auto_token = 0
         self._last_autosave = 0.0
         self._fps_t = time.perf_counter()
         self._last_status = 0.0
@@ -236,7 +247,7 @@ class MainWindow(QMainWindow):
         a_new = act("新建工程", self.new_project, "Ctrl+N")
         a_open = act("打开工程…", self.open_project, "Ctrl+O")
         a_audio = act("打开音频…", self.open_audio, "Ctrl+Shift+O")
-        a_video = act("导入参考视频…（对照画面卡点）", self.import_video, "Ctrl+Shift+V")
+        a_video = act("导入参考视频…（对照画面卡点）", lambda: self.import_video(), "Ctrl+Shift+V")
         a_vaudio = act("用视频里的声音作为音频", self.use_video_audio)
         a_demo = act("载入示例工程（没音频也能试）", self.load_demo)
         a_save = act("保存", self.save_project, "Ctrl+S")
@@ -276,7 +287,7 @@ class MainWindow(QMainWindow):
         self.tool_group = grp
         a_selall = act("全选", self.select_all, "Ctrl+A")
         a_copy = act("复制 (Ctrl+C)", self.copy_notes)
-        a_paste = act("粘贴 (Ctrl+V，落在鼠标处)", self.paste_notes)
+        a_paste = act("粘贴 (Ctrl+V，落在鼠标处)", lambda: self.paste_notes())
         a_dup = act("向后复制一份 (Ctrl+D)", self.duplicate_forward)
         a_quant = act("量化到网格 (Ctrl+Q)", self.quantize_selection)
         a_mirror = act("镜像选中区间 (Ctrl+M)", self.mirror_selection)
@@ -334,7 +345,7 @@ class MainWindow(QMainWindow):
         m_play.addAction(act("节拍器（M）", lambda: self.chk_meta.toggle()))
 
         m_tool = self.menuBar().addMenu("工具")
-        m_tool.addAction(act("区间批量填充音符…", self.fill_range))
+        m_tool.addAction(act("区间批量填充音符…", lambda: self.fill_range()))
         m_tool.addAction(act("Tap 测速…", self.tap_tempo_dialog))
         m_tool.addAction(act("自动检测 BPM…", self.auto_bpm))
         m_tool.addAction(act("自动铺点（音频起音 / 视频镜头）…", self.auto_notes))
@@ -400,7 +411,6 @@ class MainWindow(QMainWindow):
         self.timeline.copyRequested.connect(self.copy_notes)
         self.timeline.pasteRequested.connect(
             lambda ms, row: self.paste_notes(ms, None if row < 0 else row))
-        self.timeline.pasteAtPlayheadRequested.connect(self.paste_notes)
         self.timeline.duplicateRequested.connect(self.duplicate_forward)
         self.timeline.selectAllRequested.connect(self.select_all)
         self.timeline.fillRequested.connect(self.fill_range)
@@ -448,6 +458,18 @@ class MainWindow(QMainWindow):
             beats = []
         self.engine.set_beats(beats)
 
+    def _sync_view_actions(self) -> None:
+        """工程/状态切换后把菜单、工具栏、循环勾选框同步到 EditorState。"""
+        st = self.doc.state
+        self.a_wave.setChecked(st.show_waveform)
+        self.a_spec.setChecked(st.show_spectrum)
+        self.a_film.setChecked(st.show_video)
+        self.a_safe.setChecked(self.settings.show_safe)
+        self.btn_follow.setChecked(st.follow)
+        self.chk_loop.setChecked(st.loop_on)
+        self.set_tool(st.tool)
+        self.spectrum.setVisible(self.a_live.isChecked())
+
     def _update_counts(self) -> None:
         n = len(self.doc.project.chart)
         s = len(self.doc.selection)
@@ -481,6 +503,7 @@ class MainWindow(QMainWindow):
         self.timeline.update()
         self.preview.update()
         self._push_beats()
+        self._update_playhead(self.position_ms, force=True)
 
     def on_notes_changed(self) -> None:
         self.timeline.update()
@@ -497,6 +520,7 @@ class MainWindow(QMainWindow):
         self.cb_rate.setCurrentIndex(max(0, i))
         self.cb_rate.blockSignals(False)
         self.preview.set_safe_area(self.settings.show_safe)
+        self._update_playhead(self.position_ms, force=True)
 
     def _refresh_recent(self) -> None:
         self.menu_recent.clear()
@@ -514,7 +538,8 @@ class MainWindow(QMainWindow):
     @property
     def position_ms(self) -> float:
         if self.engine.playing:
-            return self.engine.position_ms()
+            # 用户手动校准量：正值 = 把播放头往声音前方挪
+            return max(0.0, self.engine.position_ms() + self.engine.latency_ms)
         if self._virtual_active:
             return self._virtual_base + self._virtual.elapsed() * self.engine.rate
         return self.engine._seek_ms
@@ -544,11 +569,16 @@ class MainWindow(QMainWindow):
         if self._virtual_active:
             self._virtual_base = self.position_ms
             self._virtual_active = False
+            self.engine._seek_ms = self._virtual_base     # 下次 play() 从暂停处继续
             self._on_play_state(False)
 
     def seek(self, ms: float) -> None:
         ms = max(0.0, float(ms))
-        self.engine.seek(ms)
+        raw = ms
+        if self.engine.playing:
+            # position_ms() 会加回 latency_ms，这里先扣掉，避免每次 seek 越跑越偏
+            raw = max(0.0, ms - self.engine.latency_ms)
+        self.engine.seek(raw)
         if self._virtual_active:
             self._virtual_base = ms
             self._virtual.start()
@@ -557,6 +587,9 @@ class MainWindow(QMainWindow):
     def _on_play_state(self, playing: bool) -> None:
         self.btn_play.setText(i18n.tr("⏸  暂停") if playing else i18n.tr("▶  播放"))
         self.timeline.set_position(self.position_ms, playing)
+        if not playing:
+            # 暂停后位置可能不再变化，这里主动刷一次，顺便让参考画面启动精确取帧
+            self._update_playhead(self.position_ms, force=True)
 
     # ============================================================ 界面语言
     def set_language(self, code: str) -> None:
@@ -587,6 +620,8 @@ class MainWindow(QMainWindow):
 
     def _on_loop_toggle(self, on: bool) -> None:
         self.doc.state.loop_on = bool(on)
+        if not on:
+            self.doc.state.loop_armed = False
         self.timeline.update()
 
     def _on_metronome(self, on: bool) -> None:
@@ -624,6 +659,10 @@ class MainWindow(QMainWindow):
 
     def _toggle_spec(self, on: bool) -> None:
         self.doc.state.show_spectrum = bool(on)
+        if on and self.spec is not None:
+            self.timeline.set_spectrogram(self.spec)
+        elif not on:
+            self.timeline.set_spectrogram(None)
         self._update_spec_state()
         self.timeline.update()
 
@@ -632,6 +671,8 @@ class MainWindow(QMainWindow):
 
     def _update_spec_state(self) -> None:
         on = self.a_spec.isChecked()
+        if on and self.spec is not None and self.timeline._spec is None:
+            self.timeline.set_spectrogram(self.spec)
         if on and self.spec is None and self.engine.samples is not None:
             self.start_spectrogram()
         self.spectrum.setVisible(self.a_live.isChecked())
@@ -643,6 +684,7 @@ class MainWindow(QMainWindow):
             return
         samples = self.engine.samples
         sr = self.engine.sr
+        token = self._spec_token
         t0 = time.perf_counter()
 
         def work():
@@ -656,15 +698,22 @@ class MainWindow(QMainWindow):
         self._spec_task = task
 
         def on_done(res) -> None:
-            self._spec_task = None
+            if self._spec_task is task:
+                self._spec_task = None
+            if token != self._spec_token:
+                # 媒体/工程已经换了，旧频谱绝不能套到新音频上
+                if self.a_spec.isChecked() and self.engine.samples is not None:
+                    QTimer.singleShot(120, self.start_spectrogram)
+                return
             sp, sec = res
             self.spec = sp
             self.timeline.set_spectrogram(sp if self.a_spec.isChecked() else None)
             self.statusBar().showMessage(f"频谱图完成（{sec:.1f}s，{sp.frames} 列）", 4000)
 
         def on_fail(msg: str) -> None:
-            self._spec_task = None
-            if self.silent:
+            if self._spec_task is task:
+                self._spec_task = None
+            if token == self._spec_token and self.silent:
                 print("[频谱失败]", msg, flush=True)
 
         task.done.connect(on_done)
@@ -673,8 +722,21 @@ class MainWindow(QMainWindow):
 
     # ============================================================ 参考视频
     def _video_len(self) -> float:
-        """媒体总长度（取所有片段末端）。"""
-        ends = [c.end_ms() for c in self.doc.project.clips if c.duration_ms > 0]
+        """媒体总长度（取所有片段末端）。
+
+        旧工程/异常片段的 duration_ms 可能是 0；这时用已解码的缓存长度兜底，
+        否则整条时间轴会被压成 1 秒。
+        """
+        ends: list[float] = []
+        for c in self.doc.project.clips:
+            dur = float(c.duration_ms)
+            if dur <= 0:
+                got = self._media_cache.get(c.path)
+                if got is not None:
+                    samples, sr = got
+                    dur = samples.shape[0] * 1000.0 / max(1, sr)
+            if dur > 0:
+                ends.append(float(c.offset_ms) + dur)
         return max(ends) if ends else 0.0
 
     def _video_path(self) -> str:
@@ -727,39 +789,47 @@ class MainWindow(QMainWindow):
             return "replace"
         return None
 
-    def import_media(self, path: str, mode: str | None = None) -> None:
-        """导入一段音频或视频；音频会解码进缓存，视频还会抽参考画面。"""
+    def import_media(self, path: str, mode: str | None = None, force_audio: bool = False) -> None:
+        """导入一段音频或视频；音频会解码进缓存，视频还会抽参考画面。
+
+        force_audio=True：文件即使带视频扩展名，也只把它当音频导入
+        （“用视频里的声音作为音频”用这个，而不是再追加一份视频）。
+        """
         if not path or not os.path.isfile(path):
+            return
+        if self._media_busy:
+            self._info("正在导入", "上一段媒体还在解码，请稍等几秒再试。")
             return
         ff = self.settings.ffmpeg
         if not ff or not os.path.isfile(ff):
             self._warn("缺少 ffmpeg", "没找到 ffmpeg.exe，请在「设置」标签里指定路径。")
             return
-        is_video = path.lower().endswith(VIDEO_EXT)
+        is_video = path.lower().endswith(VIDEO_EXT) and not force_audio
         from ..video import probe_audio_stream, probe_video
 
         if mode is None:
             mode = self._ask_media_mode(path, is_video)
         if mode is None:
             return
-        info = probe_video(path) if is_video else None
-        ainfo = probe_audio_stream(path) if is_video else {"has": True}
+        ffprobe = find_ffprobe(ff)
+        info = probe_video(path, ffprobe) if is_video else None
+        ainfo = probe_audio_stream(path, ffprobe) if (is_video or force_audio) else {"has": True}
         if is_video and info is not None and info.duration_ms <= 0:
             info.duration_ms = 60000.0
         if not ainfo.get("has") and not is_video:
             self._warn("这个文件没有声音", "请换一个音频文件。")
             return
-        self._media_mode = mode
-        self._media_path = path
+        self.pause()                       # 解码/混音期间不要继续放旧音频
         self._media_is_video = is_video
         self._media_info = info
         self._media_ainfo = ainfo
         self.statusBar().showMessage(
             f"正在{'抽取参考画面与解码音频' if is_video else '解码音频'}：{os.path.basename(path)} …")
         QApplication.setOverrideCursor(Qt.BusyCursor)
+        self._media_busy = True
         task = Task(self._media_worker, path, bool(is_video), ff, bool(ainfo.get("has")), parent=self)
         task.done.connect(lambda res: self._media_ready(path, mode, res))
-        task.failed.connect(self._task_failed)
+        task.failed.connect(self._media_failed)
         task.start()
 
     @staticmethod
@@ -777,14 +847,19 @@ class MainWindow(QMainWindow):
             pk = peaks(samples, PEAK_BUCKETS)
         film = None
         if is_video:
-            info = probe_video(path)
+            info = probe_video(path, find_ffprobe(ffmpeg))
             film = extract_filmstrip(path, info, ffmpeg, target_fps=4.0, thumb_h=72,
                                      max_frames=1500)
         return samples, sr, pk, film
 
+    def _media_failed(self, msg: str) -> None:
+        self._media_busy = False
+        self._task_failed(msg)
+
     def _media_ready(self, path: str, mode: str, res) -> None:
         from ..model import MediaClip
 
+        self._media_busy = False
         QApplication.restoreOverrideCursor()
         samples, sr, pk, film = res
         info = self._media_info
@@ -826,6 +901,8 @@ class MainWindow(QMainWindow):
             self.doc.project.audio_path = path
         self.doc.touch("导入媒体")
         self._rebuild_media()
+        if mode == "replace":
+            self.seek(0.0)
         self.settings.remember_dir(path)
         self.settings.save()
         self.refvideo.setVisible(self.a_ref.isChecked() and bool(self._films))
@@ -847,6 +924,8 @@ class MainWindow(QMainWindow):
         mix = np.zeros((n, 2), dtype=np.float32)
         any_audio = False
         for c in clips:
+            if not c.has_audio:          # 无声视频/已标记无音轨的片段不要重复混音
+                continue
             got = self._media_cache.get(c.path)
             if got is None:
                 continue
@@ -870,27 +949,34 @@ class MainWindow(QMainWindow):
         self.engine._rebuild()
         self._peaks = peaks(mix, PEAK_BUCKETS) if any_audio else None
         self.timeline.set_audio(self._peaks, max(self.engine.duration_ms, self._video_len()))
-        self.timeline.set_clips([(c, self._films.get(c.path)) for c in clips])
+        clip_items = [(c, self._films.get(c.path) if c.kind == "video" else None)
+                      for c in clips]
+        self.timeline.set_clips(clip_items)
         self.spectrum.set_audio(mix if any_audio else None, sr)
-        self.refvideo.set_clips([(c, self._films.get(c.path)) for c in clips], self.settings.ffmpeg)
+        self.refvideo.set_clips(clip_items, self.settings.ffmpeg)
         self.spec = None
+        self._spec_token += 1
         self.timeline.set_spectrogram(None)
         if any_audio and self.a_spec.isChecked():
             QTimer.singleShot(120, self.start_spectrogram)
         self._update_duration()
 
     def use_video_audio(self) -> None:
-        """把某个视频片段里的声音单独提出来当音频（多加一段）。"""
+        """把某个视频片段里的声音单独提出来当音频（多加一段音频，不再复制视频）。"""
         path = self._video_path()
         if not path:
             self._info("还没有参考视频", "先导入一个带声音的视频。")
             return
         from ..video import probe_audio_stream
 
-        if not probe_audio_stream(path).get("has"):
+        if not probe_audio_stream(path, find_ffprobe(self.settings.ffmpeg)).get("has"):
             self._info("这个视频没有声音", "视频里没有音轨，请另外载入音频文件。")
             return
-        self.import_media(path, mode="append")
+        if any(c.path == path and c.kind == "video" and c.has_audio
+               for c in self.doc.project.clips):
+            self._info("视频声音已经在用了", "这个视频导入时已经带声音，不需要再单独提取一遍。")
+            return
+        self.import_media(path, mode="append", force_audio=True)
 
     # ================================================================ 时钟
     def _tick(self) -> None:
@@ -910,12 +996,15 @@ class MainWindow(QMainWindow):
             self.seek(st.loop_a)
             self.play()
             pos = st.loop_a
-        self._update_playhead(pos, force=False)
+        # 暂停且位置没变时不要每 16ms 重绘预览、做频谱 FFT（空闲 CPU 大头）
+        if playing or pos != self._last_ui_pos:
+            self._update_playhead(pos, force=False)
         if self.doc.dirty and time.time() - self._last_autosave > 90:
             self._last_autosave = time.time()
             self._autosave()
 
     def _update_playhead(self, pos: float, force: bool) -> None:
+        self._last_ui_pos = float(pos)
         playing = self.engine.playing or self._virtual_active
         self.timeline.set_position(pos, playing)
         self.preview.set_position(pos)
@@ -986,11 +1075,19 @@ class MainWindow(QMainWindow):
     # ============================================================== 打点/编辑
     def tap_note(self) -> None:
         """在播放位置打一个点（卡点核心操作）。"""
+        now = time.perf_counter()
+        gap_ms = float(self.settings.tap_min_ms)
+        if gap_ms > 0 and self._last_tap_at and (now - self._last_tap_at) * 1000.0 < gap_ms:
+            self.statusBar().showMessage(f"打点太快（最小间隔 {gap_ms:g} ms）", 700)
+            return
+        self._last_tap_at = now
         pos = self.position_ms
         st = self.doc.state
         if st.tap_quantize and st.snap_on:
             pos = self.doc.project.chart.timemap.snap(pos, st.snap_divisor)
         rows = self.doc.project.theme.active_rows()
+        if not rows:
+            return
         lane = max(0, min(len(rows) - 1, st.current_lane))
         nn = Note(pos, rows[lane], lane)
         self.doc.edit("打点", lambda: self.doc.project.chart.add(nn))
@@ -1044,12 +1141,11 @@ class MainWindow(QMainWindow):
                 if at_row is not None and rows:
                     n.lane = max(0, min(len(rows) - 1, crow + d_row))
                     n.type = rows[n.lane]
-                self.doc.project.chart.add(n)
                 added.append(n)
 
         fn()
-        self.doc.undo_stack.push("粘贴", before, self.doc.snapshot())
-        self.doc._mark_dirty(True)
+        self.doc.project.chart.add_many(added)      # 一次排序，别逐个 add
+        self.doc.commit_external("粘贴", before)
         self.doc.set_selection(added)
         self.on_notes_changed()
         self.statusBar().showMessage(f"粘贴 {len(added)} 个音符", 2000)
@@ -1061,9 +1157,11 @@ class MainWindow(QMainWindow):
         tm = self.doc.project.chart.timemap
         b0 = tm.beat(sel[0].t)
         b1 = tm.beat(max(n.end for n in sel))
-        span = max(1.0, round(b1 - b0))          # 至少一个整拍
         bar = 4.0
-        span = max(bar, round(span / bar) * bar) if span > bar else span
+        span = max(1.0, b1 - b0)                 # 至少一个整拍
+        if span > bar:
+            # 向上取整到整小节：向下取整会让长选区复制后和原选区重叠
+            span = math.ceil(span / bar - 1e-9) * bar
         delta = tm.ms(b0 + span) - tm.ms(b0)
         added = []
         before = self.doc.snapshot()
@@ -1072,12 +1170,11 @@ class MainWindow(QMainWindow):
             for n in sel:
                 c = copy.deepcopy(n)
                 c.t += delta
-                self.doc.project.chart.add(c)
                 added.append(c)
 
         fn()
-        self.doc.undo_stack.push("向后复制", before, self.doc.snapshot())
-        self.doc._mark_dirty(True)
+        self.doc.project.chart.add_many(added)
+        self.doc.commit_external("向后复制", before)
         self.doc.set_selection(added)
         self.on_notes_changed()
 
@@ -1110,22 +1207,34 @@ class MainWindow(QMainWindow):
     def set_loop_here(self) -> None:
         st = self.doc.state
         pos = self.position_ms
-        if not st.loop_on or st.loop_b > st.loop_a:
-            st.loop_a, st.loop_b = pos, pos
-            st.loop_on = False
-            self.chk_loop.setChecked(False)
-            self.statusBar().showMessage("已设置循环起点，再按一次设置终点", 3000)
-        else:
+        if st.loop_armed:
+            # 第二次按 L：设终点并启用循环
             st.loop_b = max(pos, st.loop_a + 100.0)
+            st.loop_armed = False
             st.loop_on = True
             self.chk_loop.setChecked(True)
             self.statusBar().showMessage(
                 f"循环区间 {fmt_time(st.loop_a)} → {fmt_time(st.loop_b)}", 3000)
+        elif st.loop_b > st.loop_a:
+            # 已有循环区间：单独按 L 把终点挪到播放头
+            st.loop_b = max(pos, st.loop_a + 100.0)
+            st.loop_on = True
+            self.chk_loop.setChecked(True)
+            self.statusBar().showMessage(
+                f"循环终点改为 {fmt_time(st.loop_b)}（要重设起点请先清除循环）", 3000)
+        else:
+            st.loop_a = pos
+            st.loop_b = pos
+            st.loop_on = False
+            st.loop_armed = True
+            self.chk_loop.setChecked(False)
+            self.statusBar().showMessage("已设置循环起点，再按一次 L 设置终点", 3000)
         self.timeline.update()
 
     def clear_loop(self) -> None:
         st = self.doc.state
         st.loop_on = False
+        st.loop_armed = False
         st.loop_a = st.loop_b = 0.0
         self.chk_loop.setChecked(False)
         self.timeline.update()
@@ -1134,10 +1243,11 @@ class MainWindow(QMainWindow):
         self.panel_types.list.setCurrentRow(row)
 
     # ========================================================== 区间批量填充
-    def fill_range(self, start: float | None = None) -> None:
+    def fill_range(self, start: float | None = None, end: float | None = None) -> None:
         """在区间内按自定义间隔填满音符。
 
         区间优先用时间轴上的**框选**（在标尺/波形处横向拖一下），其次循环区间。
+        start/end 同时给出时表示“就是这个框选区间”（右键菜单用）。
         """
         chart = self.doc.project.chart
         st = self.doc.state
@@ -1145,7 +1255,10 @@ class MainWindow(QMainWindow):
         locked = False
         if start is not None:
             t0 = float(start)
-            t1 = st.loop_b if (st.loop_on and st.loop_b > t0) else (dur or t0 + 8000.0)
+            if end is not None and float(end) > t0:
+                t1, locked = float(end), True
+            else:
+                t1 = st.loop_b if (st.loop_on and st.loop_b > t0) else (dur or t0 + 8000.0)
         elif st.has_range():
             t0, t1, locked = st.sel_t0, st.sel_t1, True
         elif st.loop_on and st.loop_b > st.loop_a:
@@ -1170,9 +1283,19 @@ class MainWindow(QMainWindow):
         lane_of = {k: i for i, (k, _n) in enumerate(rows)}
         before = self.doc.snapshot()
         base = len(chart)
+        new_notes: list[Note] = []
+        seen: set[tuple[float, int]] = set()
         for i, t in enumerate(times):
             k = keys[i % len(keys)]
-            chart.add(Note(t, k, lane_of.get(k, 0)))
+            lane = lane_of.get(k, 0)
+            key = (round(float(t), 3), lane)
+            if key in seen:
+                continue
+            seen.add(key)
+            if chart.find_at(t, lane, 0.5) is not None:
+                continue
+            new_notes.append(Note(t, k, lane))
+        chart.add_many(new_notes)
         self.doc.commit_external("区间填充", before)
         self.on_notes_changed()
         self.statusBar().showMessage(f"已填充 {len(chart) - base} 个音符", 5000)
@@ -1211,7 +1334,7 @@ class MainWindow(QMainWindow):
         segs = list(self.doc.project.chart.timemap.segments)
         segs[idx] = BpmSegment(t if idx > 0 else segs[0].time_ms, bpm)
         self.doc.project.chart.set_segments(segs, self.doc.project.chart.offset_ms)
-        self.doc.undo_stack.push("修改 BPM 段", before, self.doc.snapshot())
+        self.doc.commit_external("修改 BPM 段", before)
         self.on_chart_changed()
         self.panel_chart.refresh()
 
@@ -1224,7 +1347,7 @@ class MainWindow(QMainWindow):
         t, b = dlg.values()
         before = self.doc.snapshot()
         self.doc.project.chart.add_segment(t, b)
-        self.doc.undo_stack.push("添加 BPM 段", before, self.doc.snapshot())
+        self.doc.commit_external("添加 BPM 段", before)
         self.on_chart_changed()
         self.panel_chart.refresh()
 
@@ -1236,7 +1359,7 @@ class MainWindow(QMainWindow):
         bpm = round(dlg.bpm, 3)
         before = self.doc.snapshot()
         self.doc.project.chart.add_segment(self.position_ms, bpm)
-        self.doc.undo_stack.push("Tap 测速", before, self.doc.snapshot())
+        self.doc.commit_external("Tap 测速", before)
         self.on_chart_changed()
         self.panel_chart.refresh()
         self.statusBar().showMessage(f"已在播放头插入 {bpm:g} BPM 段", 4000)
@@ -1260,7 +1383,7 @@ class MainWindow(QMainWindow):
     def _auto_bpm_done(self, res) -> None:
         bpm, conf, off = res
         if bpm <= 0:
-            QMessageBox.information(self, "没测出来", "没能估计出 BPM，可以用 Tap 测速手动打。")
+            self._info("没测出来", "没能估计出 BPM，可以用 Tap 测速手动打。")
             return
         msg = (f"估计 BPM：{bpm:.2f}（置信度 {conf * 100:.0f}%）\n"
                f"建议节拍偏移：{off:.1f} ms\n\n"
@@ -1276,7 +1399,7 @@ class MainWindow(QMainWindow):
             self.doc.project.chart.set_segments([BpmSegment(off, bpm)], off)
         else:
             self.doc.project.chart.add_segment(self.position_ms, bpm)
-        self.doc.undo_stack.push("自动 BPM", before, self.doc.snapshot())
+        self.doc.commit_external("自动 BPM", before)
         self.on_chart_changed()
         self.panel_chart.refresh()
 
@@ -1286,6 +1409,7 @@ class MainWindow(QMainWindow):
             return
         rows = [(k, self.doc.project.theme.style(k).name) for k in self.doc.project.theme.active_rows()]
         dlg = AutoNotesDialog(self, rows, has_video=bool(self._video_path()))
+        self._auto_token += 1
         dlg.detectRequested.connect(self._auto_notes_detect)
         while True:
             if dlg.exec() != QDialog.DialogCode.Accepted:
@@ -1294,19 +1418,25 @@ class MainWindow(QMainWindow):
                 break
             self._info("先试检测", "请先点「试检测」生成结果。")
         times = list(dlg.times)
-        key = dlg.params()["type"]
+        type_key = dlg.params()["type"]
         rows_list = self.doc.project.theme.active_rows()
-        lane = rows_list.index(key) if key in rows_list else 0
+        lane = rows_list.index(type_key) if type_key in rows_list else 0
         before = self.doc.snapshot()
-
-        def fn():
-            for t in times:
-                self.doc.project.chart.add(Note(t, key, lane))
-
-        fn()
+        chart = self.doc.project.chart
+        new_notes: list[Note] = []
+        seen: set[tuple[float, int]] = set()
+        for t in times:
+            key = (round(float(t), 3), lane)
+            if key in seen:
+                continue
+            seen.add(key)
+            if chart.find_at(t, lane, 0.5) is not None:
+                continue
+            new_notes.append(Note(t, type_key, lane))
+        chart.add_many(new_notes)
         self.doc.commit_external("自动铺点", before)
         self.on_notes_changed()
-        self.statusBar().showMessage(f"已生成 {len(times)} 个音符", 5000)
+        self.statusBar().showMessage(f"已生成 {len(new_notes)} 个音符", 5000)
 
     def _auto_notes_detect(self, params: dict) -> None:
         sens = params["sensitivity"]
@@ -1337,14 +1467,17 @@ class MainWindow(QMainWindow):
             return times, time.perf_counter() - t0
 
         self._auto_dlg = self.sender()
+        token = self._auto_token
+        dlg = self._auto_dlg
         task = Task(work, parent=self)
-        task.done.connect(self._auto_notes_done)
+        task.done.connect(lambda res, d=dlg, t=token: self._auto_notes_done(res, d, t))
         task.failed.connect(self._task_failed)
         task.start()
 
-    def _auto_notes_done(self, res) -> None:
+    def _auto_notes_done(self, res, dlg=None, token: int = -1) -> None:
+        if token != self._auto_token:
+            return                          # 旧对话框/旧检测的结果，不要写到新对话框
         times, elapsed = res
-        dlg = getattr(self, "_auto_dlg", None)
         if dlg is not None:
             dlg.set_result(times, elapsed)
 
@@ -1368,6 +1501,8 @@ class MainWindow(QMainWindow):
         self._peaks = None
         self.spec = None
         self._spec_task = None
+        self._spec_token += 1
+        self._media_busy = False
         self.spectrum.set_audio(None, 48000)
         self.timeline.set_spectrogram(None)
         self._media_cache.clear()
@@ -1380,18 +1515,21 @@ class MainWindow(QMainWindow):
         self.doc.selection.clear()
         self.doc.mark_clean()
         self.doc.state = type(self.doc.state)()
-        self.selection_loaded = True
         self.timeline.set_audio(None, 0.0)
         self.timeline.set_duration(0.0)
         self.refresh_all()
+        self._sync_view_actions()
         # 恢复工程里的媒体片段：逐个解码进缓存，最后统一混音
         from ..model import MediaClip
 
         restore = [c for c in project.clips if c.path and os.path.isfile(c.path)]
-        gone = len(project.clips) - len(restore)
         if audio_path and os.path.isfile(audio_path) and not any(c.path == audio_path for c in restore):
-            restore.append(MediaClip(path=audio_path, kind="audio",
-                                     name=os.path.basename(audio_path)))
+            clip = MediaClip(path=audio_path, kind="audio",
+                             name=os.path.basename(audio_path), has_audio=True)
+            project.clips.append(clip)      # 必须进工程数据，否则 _rebuild_media 看不到它
+            project.audio_path = audio_path
+            restore.append(clip)
+        gone = len(project.clips) - len(restore)
         if gone:
             self.statusBar().showMessage(f"有 {gone} 段媒体文件找不到了，已跳过", 7000)
         if restore:
@@ -1400,6 +1538,8 @@ class MainWindow(QMainWindow):
         elif len(project.chart) == 0:
             self.statusBar().showMessage("空工程：先导入音频/视频，或用「示例工程」练手", 6000)
         self._refresh_recent()
+        # 换工程后播放头必须回到开头，不能沿用旧工程的 _seek_ms
+        self.seek(0.0)
 
     def _restore_next(self) -> None:
         """依次把工程里的媒体片段解码回缓存。"""
@@ -1416,6 +1556,8 @@ class MainWindow(QMainWindow):
         clip = q.pop(0)
         ff = self.settings.ffmpeg
         if not ff or not os.path.isfile(ff):
+            self.statusBar().showMessage(
+                "找不到 ffmpeg，工程里的媒体没有恢复；请在「设置」里指定 ffmpeg 后重新打开", 9000)
             return
         task = Task(self._media_worker, clip.path, clip.kind == "video", ff,
                     bool(clip.has_audio), parent=self)
@@ -1429,6 +1571,13 @@ class MainWindow(QMainWindow):
             self._media_cache[clip.path] = (samples, sr)
         if film is not None:
             self._films[clip.path] = film
+        if clip.duration_ms <= 0:
+            # v1 工程/异常片段没有 duration：用解码结果补上，否则会被当成 1 秒
+            dur = samples.shape[0] * 1000.0 / max(1, sr) if samples is not None else 0.0
+            if film is not None and getattr(film, "count", 0):
+                dur = max(dur, float(film.times[-1]) + float(film.step_ms))
+            if dur > 0:
+                clip.duration_ms = dur
         self._restore_next()
 
     def open_project(self) -> None:
@@ -1522,12 +1671,12 @@ class MainWindow(QMainWindow):
             ex.output = out
             self.panel_export.refresh()
         if not ex.output:
-            QMessageBox.information(self, "先选输出位置", "请在「导出」面板里选一个输出文件。")
+            self._info("先选输出位置", "请在「导出」面板里选一个输出文件。")
             self.tabs.setCurrentWidget(self.panel_export)
             return
         ff = self.settings.ffmpeg
         if not ff or not os.path.isfile(ff):
-            QMessageBox.warning(self, "缺少 ffmpeg", "没找到 ffmpeg.exe，请在「设置」标签里指定路径。")
+            self._warn("缺少 ffmpeg", "没找到 ffmpeg.exe，请在「设置」标签里指定路径。")
             self.tabs.setCurrentWidget(self.panel_settings)
             return
         t0, t1 = compute_range(self.doc.project, self.engine.duration_ms)
@@ -1587,17 +1736,19 @@ class MainWindow(QMainWindow):
             size = ""
             if os.path.isfile(res.path):
                 size = f"\n文件大小：{os.path.getsize(res.path) / 1048576:.1f} MB"
-            QMessageBox.information(
-                self, "导出完成",
-                f"已导出 {res.frames} 帧，用时 {dur:.1f}s\n{res.path}{size}\n\n"
-                f"导入剪辑软件后，把它放在原视频上层即可（透明通道已带）。")
-            if ex.open_after:
+            if self.silent:
+                print(f"[导出完成] {res.frames} 帧，{dur:.1f}s，{res.path}{size}", flush=True)
+            else:
+                QMessageBox.information(
+                    self, "导出完成",
+                    f"已导出 {res.frames} 帧，用时 {dur:.1f}s\n{res.path}{size}\n\n"
+                    f"导入剪辑软件后，把它放在原视频上层即可（透明通道已带）。")
+            if ex.open_after and not self.silent:
                 self._open_folder(os.path.dirname(os.path.abspath(res.path)))
 
         def on_failed(msg: str) -> None:
             dlg.close()
-            QApplication.restoreOverrideCursor()
-            QMessageBox.critical(self, "导出失败", msg)
+            self._task_failed(msg)
 
         task.progress.connect(on_progress)
         task.done.connect(on_done)
@@ -1626,7 +1777,7 @@ class MainWindow(QMainWindow):
             if ex.open_after:
                 self._open_folder(os.path.dirname(os.path.abspath(path)))
         except Exception as e:  # noqa: BLE001
-            QMessageBox.critical(self, "导出失败", str(e))
+            self._task_failed(str(e))
 
     # ============================================================ 检查更新
     def check_updates(self, auto: bool = False) -> None:
@@ -1672,6 +1823,9 @@ class MainWindow(QMainWindow):
             stamp()                           # 失败也记时间，别一直重试
             if auto:
                 return                        # 自动检查失败就静默，不打扰
+            if self.silent:
+                print(f"[检查更新失败] {msg}", flush=True)
+                return
             box = QMessageBox(self)
             box.setWindowTitle("检查更新失败")
             box.setIcon(QMessageBox.Warning)
@@ -1698,6 +1852,9 @@ class MainWindow(QMainWindow):
         names = "、".join(a["name"] for a in assets[:5] if a.get("name"))
         if names:
             body += f"\n\n发布附件：{names}"
+        if self.silent:
+            print(f"[发现新版本] {tag}\n{body}", flush=True)
+            return
         box = QMessageBox(self)
         box.setWindowTitle("发现新版本")
         box.setIcon(QMessageBox.Information)
@@ -1745,7 +1902,7 @@ class MainWindow(QMainWindow):
             "【快捷键】\n"
             "  空格 播放/暂停　F 打点　V/B/R 鼠标模式　Tab 切换模式\n"
             "  Ctrl+Z/Y 撤销/重做　Del 删除\n"
-            "  Ctrl+A 全选　Ctrl+C/V 复制/粘贴到播放头　Ctrl+D 向后复制\n"
+            "  Ctrl+A 全选　Ctrl+C/V 复制/粘贴到鼠标位置　Ctrl+D 向后复制\n"
             "  数字 1~9 切换音符类型　Q/W 上下换行　L 设循环　M 节拍器\n"
             "  Ctrl+0 缩放适应　Ctrl+E 导出视频　Ctrl+Shift+E 导出当前帧 PNG\n"
             "  Ctrl+Shift+V 导入参考视频　Ctrl+U 检查更新（菜单栏顶上那一项）")
@@ -1895,6 +2052,7 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard():
             ev.ignore()
             return
+        self.settings.geometry = self.saveGeometry()
         self.settings.save()
         self.engine.shutdown()             # 音频线程必须在这里收掉
         ev.accept()

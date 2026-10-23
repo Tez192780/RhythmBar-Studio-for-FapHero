@@ -68,6 +68,7 @@ class BpmSegmentDialog(QDialog):
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         lay.addWidget(btns)
+        translate_tree(self)
 
     def values(self) -> tuple[float, float]:
         return float(self.sp_time.value()), float(self.sp_bpm.value())
@@ -433,41 +434,6 @@ class AutoNotesDialog(QDialog):
         self.sl_scene.setEnabled(video)
         self.sl_sens.setEnabled(not video)
         self.sl_gap.setEnabled(not video)
-
-    def _detect(self) -> None:
-        self.lbl.setText("检测中…")
-        self.detectRequested.emit(self.params())
-
-    def params(self) -> dict:
-        return {
-            "source": self.cb_source.currentData(),
-            "sensitivity": self.sl_sens.value(),
-            "min_gap_ms": self.sl_gap.value(),
-            "scene_threshold": self.sl_scene.value(),
-            "quantize": self.chk_quant.isChecked(),
-            "type": self.cb_type.currentData(),
-        }
-
-    def set_result(self, times: list[float], elapsed_s: float) -> None:
-        self.times = list(times)
-        self.lbl.setText(f"检测到 {len(times)} 个点（用时 {elapsed_s:.1f}s）。"
-                         f"点「生成音符」写入谱面。")
-        f.addRow("", self.chk_quant)
-        lay.addLayout(f)
-        self.lbl = QLabel("点「试检测」看看会生成多少音符")
-        self.lbl.setStyleSheet("color:#8b949e;")
-        lay.addWidget(self.lbl)
-        row = QHBoxLayout()
-        b_detect = QPushButton("试检测")
-        b_detect.clicked.connect(self._detect)
-        row.addWidget(b_detect)
-        row.addStretch(1)
-        lay.addLayout(row)
-        self.box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        self.box.button(QDialogButtonBox.Ok).setText("生成音符")
-        self.box.accepted.connect(self.accept)
-        self.box.rejected.connect(self.reject)
-        lay.addWidget(self.box)
 
     def _detect(self) -> None:
         self.lbl.setText("检测中…")

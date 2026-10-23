@@ -118,14 +118,20 @@ def bar_rect(project: Project, w: float, h: float) -> tuple[float, float, float,
 
 
 def draw_canvas(p, project: Project, w: int, h: int, t_ms: float, ss: int,
-                solid: QColor | None) -> None:
-    """在 w×h 逻辑画布上画一帧（ss 为超采样倍数）。"""
+                solid: QColor | None, renderer: BarRenderer | None = None) -> None:
+    """在 w×h 逻辑画布上画一帧（ss 为超采样倍数）。
+
+    renderer 可复用（导出循环里只建一次），否则底板位图缓存每帧都会失效。
+    solid 同时传给渲染器：否则渲染器内部为透明背景做的清零会把实色背景擦掉。
+    """
     p.save()
     if solid is not None:
         p.fillRect(QRectF(0, 0, float(w) * ss, float(h) * ss), solid)
     x, y, bw, bh = bar_rect(project, float(w), float(h))
     p.translate(x * ss, y * ss)
-    BarRenderer(project).render(p, bw * ss, bh * ss, t_ms)
+    r = renderer or BarRenderer(project)
+    r.p = project
+    r.render(p, bw * ss, bh * ss, t_ms, solid_bg=solid)
     p.restore()
 
 
@@ -258,7 +264,7 @@ def export_video(
             t_ms = t0 + i * 1000.0 / fps
             img.fill(Qt.transparent)
             p = QPainter(img)
-            draw_canvas(p, project, w, h, t_ms, ss, solid)
+            draw_canvas(p, project, w, h, t_ms, ss, solid, renderer)
             p.end()
             if ss > 1:
                 out = img.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)

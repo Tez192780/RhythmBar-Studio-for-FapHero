@@ -7,7 +7,8 @@ from dataclasses import dataclass, field
 
 from PySide6.QtCore import QObject, Signal
 
-from .model import Note, Project, UndoStack
+from .model import Chart, Note, Project, UndoStack
+from .theme import Theme
 
 
 @dataclass
@@ -21,6 +22,7 @@ class EditorState:
     loop_on: bool = False
     loop_a: float = 0.0
     loop_b: float = 0.0
+    loop_armed: bool = False       # 已按 L 设好起点，下一次 L 设终点
     sel_t0: float = 0.0              # 区间选择（在标尺/波形处拖出来的时间区间）
     sel_t1: float = 0.0
     follow: bool = True
@@ -66,11 +68,25 @@ class Doc(QObject):
         self._pending: dict | None = None
 
     # ------------------------------------------------------------- 撤销
-    def snapshot(self) -> dict:
-        return copy.deepcopy(self.project.to_dict())
+    def snapshot(self, include_theme: bool = False) -> dict:
+        """只快照谱面（默认）。
+
+        外观/导出/媒体片段是“非撤销式”的状态：如果整份 Project 都进快照，
+        撤销一个音符会把这些东西一起回滚（甚至删掉刚导入的媒体）。
+        只有明确需要“连外观结构一起撤销”的操作（如删除音符类型）才带上 theme。
+        """
+        snap: dict = {"chart": copy.deepcopy(self.project.chart.to_dict())}
+        if include_theme:
+            snap["theme"] = copy.deepcopy(self.project.theme.to_dict())
+        return snap
 
     def _restore(self, snap: dict) -> None:
-        self.project.load_dict(snap)
+        chart = Chart.from_dict(snap.get("chart", {}))
+        self.project.chart.timemap = chart.timemap
+        self.project.chart.notes = chart.notes
+        self.project.chart.sort()
+        if "theme" in snap:
+            self.project.theme = Theme.from_dict(snap["theme"])
         self.selection.clear()
         self._mark_dirty(True)
         self.changed.emit("撤销")
@@ -93,12 +109,16 @@ class Doc(QObject):
     def can_redo(self) -> bool:
         return self.undo_stack.can_redo()
 
-    def edit(self, label: str, fn, *, emit: bool = True) -> None:
-        """立即执行一次可撤销的修改。"""
-        before = self.snapshot()
+    def edit(self, label: str, fn, *, emit: bool = True, include_theme: bool = False) -> None:
+        """立即执行一次可撤销的修改。
+
+        include_theme=True 用于“删音符类型”这种同时改谱面与 theme 的操作；
+        普通音符/时间编辑不要带 theme，否则撤销会顺手回滚外观。
+        """
+        before = self.snapshot(include_theme)
         fn()
         self.project.chart.sort()
-        after = self.snapshot()
+        after = self.snapshot(include_theme)
         self.undo_stack.push(label, before, after)
         self._mark_dirty(True)
         if emit:
@@ -125,7 +145,7 @@ class Doc(QObject):
     def commit_external(self, label: str, before: dict) -> None:
         """外部（对话框/批量操作）已经改完数据后统一收尾：记撤销 + 标脏 + 通知。"""
         self.project.chart.sort()
-        self.undo_stack.push(label, before, self.snapshot())
+        self.undo_stack.push(label, before, self.snapshot("theme" in before))
         self._mark_dirty(True)
         self.changed.emit(label)
 

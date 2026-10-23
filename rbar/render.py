@@ -75,8 +75,10 @@ def shape_path(cx: float, cy: float, r: float, shape: str) -> QPainterPath:
     elif shape == "circle":
         p.addEllipse(QPointF(cx, cy), r * SHAPE_SQUEEZE["circle"], r * SHAPE_SQUEEZE["circle"])
     elif shape == "bar":
-        s = r * SHAPE_SQUEEZE["bar"] * 2.0
-        p.addRoundedRect(QRectF(cx - s, cy - s, s * 2, s * 2), s * 0.5, s * 0.5)
+        # 横向长条：宽 ≈ 2r，高 ≈ 0.84r（原来的实现画成了圆角小方块）
+        bw = r * 2.0
+        bh = r * SHAPE_SQUEEZE["bar"] * 2.0
+        p.addRoundedRect(QRectF(cx - bw * 0.5, cy - bh * 0.5, bw, bh), bh * 0.5, bh * 0.5)
     else:  # diamond
         poly = QPolygonF(
             [QPointF(cx, cy - r), QPointF(cx + r, cy), QPointF(cx, cy + r), QPointF(cx - r, cy)]
@@ -144,13 +146,14 @@ class BarRenderer:
         return 0.5 * float(self.rs.note_size) * h * float(st.size) * scale
 
     # --------------------------------------------------------------- 主入口
-    def render(self, p: QPainter, w: float, h: float, t_ms: float, *, solid_bg: QColor | None = None) -> None:
+    def render(self, p: QPainter, w: float, h: float, t_ms: float, *,
+               solid_bg: QColor | None = None, clear: bool = True) -> None:
         p.setRenderHint(QPainter.Antialiasing, True)
         p.setRenderHint(QPainter.SmoothPixmapTransform, True)
         rect = QRectF(0, 0, w, h)
         if solid_bg is not None:
             p.fillRect(rect, solid_bg)
-        else:
+        elif clear:
             # Source 模式的透明填充 = 快速清零，比 SourceOver 混合便宜得多
             p.setCompositionMode(QPainter.CompositionMode_Source)
             p.fillRect(rect, Qt.transparent)
@@ -301,16 +304,27 @@ class BarRenderer:
         self._draw_judge_diamond(p, w, h, t_ms)
 
     def _judge_target(self, t_ms: float) -> tuple[Note | None, float]:
-        """找当前“正在被打 / 刚被打到”的音符，返回 (音符, dt)。"""
+        """找当前“正在被打 / 刚被打到”的音符，返回 (音符, dt)。
+
+        优先选已经命中（0 <= dt <= flash_ms）的音符；否则退而选最近的未来音符。
+        原先直接把未来音符也算进“最近”，密集谱面（音符间隔 < flash_ms）会把
+        已经命中的音符挤掉，导致判定菱形不闪。
+        """
         js: JudgeStyle = self.th.judge
         span = max(float(js.window_ms), float(js.flash_ms)) + 40.0
-        best_n, best_dt = None, 1e18
+        best_hit, best_hit_dt = None, 1e18
+        best_future, best_future_dt = None, 1e18
         for n in self.p.chart.near(t_ms, span):
             dt = t_ms - n.t
-            if -js.window_ms <= dt <= js.flash_ms:
-                if abs(dt) < abs(best_dt):
-                    best_n, best_dt = n, dt
-        return best_n, best_dt
+            if 0.0 <= dt <= float(js.flash_ms):
+                if dt < best_hit_dt:
+                    best_hit, best_hit_dt = n, dt
+            elif -float(js.window_ms) <= dt < 0.0:
+                if abs(dt) < abs(best_future_dt):
+                    best_future, best_future_dt = n, dt
+        if best_hit is not None:
+            return best_hit, best_hit_dt
+        return best_future, best_future_dt
 
     def _draw_judge_diamond(self, p: QPainter, w: float, h: float, t_ms: float) -> None:
         """常驻的 45° 灰白菱形；音符命中后按该音符颜色闪一下。"""
@@ -320,6 +334,9 @@ class BarRenderer:
         jx = self.judge_x(w)
         n, dt = self._judge_target(t_ms)
         st = self.th.styles.get(n.type) if n is not None else None
+        if n is not None and st is None:
+            # 未知类型（手改工程/旧数据）也要能画，不能 AttributeError
+            st = NoteStyle(key=n.type, name=n.type)
         y = self.lane_y(n.lane, h) if n is not None else h * 0.5
         base_r = 0.5 * float(self.rs.note_size) * h * (float(st.size) if st is not None else 1.0)
         r = base_r * float(js.idle_scale)
@@ -348,7 +365,7 @@ class BarRenderer:
         p.setPen(Qt.NoPen)
         p.setBrush(QBrush(fill))
         p.drawPath(path)
-        outline = self.th.styles.get(n.type).outline if n is not None else "#141a20"
+        outline = st.outline if st is not None else "#141a20"
         pen = QPen(qc(outline), max(0.9, rr * 0.17))
         pen.setJoinStyle(Qt.RoundJoin)
         p.setPen(pen)

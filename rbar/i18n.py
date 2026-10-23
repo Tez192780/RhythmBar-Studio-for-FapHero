@@ -61,6 +61,7 @@ _TABLE: dict[str, tuple[str, str]] = {
     "量化到网格 (Ctrl+Q)": ("グリッドに量子化 (Ctrl+Q)", "Quantize (Ctrl+Q)"),
     "镜像选中区间 (Ctrl+M)": ("選択範囲を反転 (Ctrl+M)", "Mirror Selection (Ctrl+M)"),
     "删除选中 (Del)": ("選択を削除 (Del)", "Delete Selected (Del)"),
+    "删除 (Del)": ("削除 (Del)", "Delete (Del)"),
     "缩放适应 (Ctrl+0)": ("全体を表示 (Ctrl+0)", "Zoom to Fit (Ctrl+0)"),
     "放大 (Ctrl+=)": ("拡大 (Ctrl+=)", "Zoom In (Ctrl+=)"),
     "缩小 (Ctrl+-)": ("縮小 (Ctrl+-)", "Zoom Out (Ctrl+-)"),
@@ -191,6 +192,7 @@ _TABLE: dict[str, tuple[str, str]] = {
                             "After-hit ghost (gray blocks)"),
     "灰块（还原参考图）": ("灰ブロック（参考画像どおり）", "Gray block (as reference)"),
     "原样式淡出": ("元の見た目でフェード", "Fade in original style"),
+    "延迟": ("遅延", "Delay"),
     "消失时长": ("消えるまで", "Fade Duration"),
     "格式": ("形式", "Format"),
     "封装 / 编码": ("コンテナ / コーデック", "Container / Codec"),
@@ -227,6 +229,7 @@ _TABLE: dict[str, tuple[str, str]] = {
     "音量": ("音量", "Volume"),
     "试听速度": ("試聴速度", "Preview Speed"),
     "打点最小间隔": ("打点の最小間隔", "Min Tap Interval"),
+    "启动时检查更新": ("起動時にアップデート確認", "Check for updates on startup"),
     "预览显示安全框和尺寸标注": ("プレビューにガイドとサイズを表示", "Show guide frame & size info"),
     "快捷键（部分）": ("ショートカット（一部）", "Shortcuts (partial)"),
     # ---------------------------------------------------------------- 对话框

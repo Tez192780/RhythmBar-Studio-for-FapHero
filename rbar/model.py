@@ -297,9 +297,16 @@ class Project:
         self.audio_path = str(d.get("audio_path", ""))
         self.video_path = str(d.get("video_path", ""))
         self.clips = [MediaClip.from_dict(x) for x in (d.get("clips") or [])]
-        if not self.clips and self.audio_path:
-            self.clips = [MediaClip(path=self.audio_path, kind="audio",
-                                    name=os.path.basename(self.audio_path))]
+        if not self.clips:
+            # v1 工程只有 audio_path / video_path：补成片段，否则时长信息会丢
+            if self.audio_path:
+                self.clips.append(MediaClip(path=self.audio_path, kind="audio",
+                                            name=os.path.basename(self.audio_path),
+                                            has_audio=True))
+            if self.video_path:
+                self.clips.append(MediaClip(path=self.video_path, kind="video",
+                                            name=os.path.basename(self.video_path),
+                                            has_audio=False))
 
     @staticmethod
     def _rel(path: str, base: str) -> str:

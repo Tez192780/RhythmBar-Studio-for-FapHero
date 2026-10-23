@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 from dataclasses import dataclass
 from typing import Callable
 
@@ -152,7 +153,7 @@ def extract_filmstrip(
     ff = ffmpeg or find_ffmpeg()
     if not ff:
         raise RuntimeError("找不到 ffmpeg.exe")
-    info = info or probe_video(path)
+    info = info or probe_video(path, find_ffprobe(ff))
     dur_s = max(0.2, (info.duration_ms or 1000.0) / 1000.0)
     n_want = int(max(1, min(max_frames, round(dur_s * max(0.2, target_fps)))))
     step_s = dur_s / n_want
@@ -165,10 +166,21 @@ def extract_filmstrip(
     ]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             creationflags=CREATE_NO_WINDOW)
-    assert proc.stdout is not None
+    assert proc.stdout is not None and proc.stderr is not None
     frame_bytes = tw * th * 4
     chunks: list[bytes] = []
     n = 0
+
+    def _drain(pipe) -> None:
+        """必须读 stderr：坏文件时 ffmpeg 的错误输出可能写满管道并把自己卡死。"""
+        try:
+            for _line in iter(pipe.readline, b""):
+                pass
+        except Exception:
+            pass
+
+    drain = threading.Thread(target=_drain, args=(proc.stderr,), daemon=True)
+    drain.start()
     try:
         while True:
             if is_cancelled is not None and is_cancelled():
@@ -191,6 +203,7 @@ def extract_filmstrip(
             proc.stderr.close()
         except Exception:
             pass
+        drain.join(timeout=1.0)
     if is_cancelled is not None and is_cancelled():
         raise RuntimeError("已取消")
     if not chunks:
@@ -208,7 +221,7 @@ def decode_frame(path: str, t_ms: float, info: VideoInfo | None = None,
     ff = ffmpeg or find_ffmpeg()
     if not ff:
         raise RuntimeError("找不到 ffmpeg.exe")
-    info = info or probe_video(path)
+    info = info or probe_video(path, find_ffprobe(ff))
     th = height
     src_w = max(1, info.width or 16)
     src_h = max(1, info.height or 9)

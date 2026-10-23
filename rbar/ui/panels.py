@@ -373,7 +373,7 @@ class NoteTypePanel(QWidget):
             if victims:
                 self.doc.project.chart.remove_many(victims)
 
-        self.doc.edit("删除类型", fn)
+        self.doc.edit("删除类型", fn, include_theme=True)
         self.doc.state.current_lane = 0
         self.refresh()
         self.changed.emit()
@@ -567,7 +567,7 @@ class ChartPanel(QWidget):
         else:
             segs[i].bpm = max(1.0, min(1200.0, val))
         self.doc.project.chart.set_segments(segs, self.doc.project.chart.offset_ms)
-        self.doc.undo_stack.push("修改 BPM", before, self.doc.snapshot())
+        self.doc.commit_external("修改 BPM", before)
         self.refresh()
         self.changed.emit()
 
@@ -577,7 +577,7 @@ class ChartPanel(QWidget):
         bpm = segs[-1].bpm if segs else 120.0
         before = self.doc.snapshot()
         self.doc.project.chart.add_segment(ms, bpm)
-        self.doc.undo_stack.push("添加 BPM 段", before, self.doc.snapshot())
+        self.doc.commit_external("添加 BPM 段", before)
         self.refresh()
         self.changed.emit()
 
@@ -587,7 +587,7 @@ class ChartPanel(QWidget):
             return
         before = self.doc.snapshot()
         self.doc.project.chart.remove_segment(row)
-        self.doc.undo_stack.push("删除 BPM 段", before, self.doc.snapshot())
+        self.doc.commit_external("删除 BPM 段", before)
         self.refresh()
         self.changed.emit()
 
@@ -601,7 +601,7 @@ class ChartPanel(QWidget):
         before = self.doc.snapshot()
         off = self.doc.project.chart.offset_ms
         self.doc.project.chart.set_segments([BpmSegment(off, bpm)], off)
-        self.doc.undo_stack.push("统一 BPM", before, self.doc.snapshot())
+        self.doc.commit_external("统一 BPM", before)
         self.refresh()
         self.changed.emit()
 
@@ -759,6 +759,9 @@ class StylePanel(QWidget):
         self.sl_galpha.valueChanged.connect(self._apply)
         self.sl_gsize = FloatSlider(0.2, 1.5, gs.size, 0.01, 2)
         self.sl_gsize.valueChanged.connect(self._apply)
+        self.sl_gdelay = FloatSlider(0.0, 1000.0, gs.delay_ms, 10, 0, " ms")
+        self.sl_gdelay.setToolTip("命中后先保持原样多久，再开始变残影")
+        self.sl_gdelay.valueChanged.connect(self._apply)
         self.sl_gfade = FloatSlider(0.0, 3.0, gs.fade_s, 0.01, 2, " s")
         self.sl_gfade.valueChanged.connect(self._apply)
         f3.addRow("模式", self.cb_ghost)
@@ -766,6 +769,7 @@ class StylePanel(QWidget):
         f3.addRow("颜色", self.btn_gcolor)
         f3.addRow("不透明度", self.sl_galpha)
         f3.addRow("大小", self.sl_gsize)
+        f3.addRow("延迟", self.sl_gdelay)
         f3.addRow("消失时长", self.sl_gfade)
         root.addWidget(box3)
         root.addStretch(1)
@@ -808,6 +812,7 @@ class StylePanel(QWidget):
         self.btn_gcolor.setColor(gs.color)
         self.sl_galpha.setValue(gs.alpha)
         self.sl_gsize.setValue(gs.size)
+        self.sl_gdelay.setValue(gs.delay_ms)
         self.sl_gfade.setValue(gs.fade_s)
         self._loading = False
 
@@ -851,6 +856,7 @@ class StylePanel(QWidget):
         gs.color = self.btn_gcolor.color()
         gs.alpha = self.sl_galpha.value()
         gs.size = self.sl_gsize.value()
+        gs.delay_ms = self.sl_gdelay.value()
         gs.fade_s = self.sl_gfade.value()
         self.doc.touch("外观")
         self.changed.emit()
@@ -990,7 +996,15 @@ class ExportPanel(QWidget):
         i = self.cb_quality.findData(ex.quality)
         self.cb_quality.setCurrentIndex(max(0, i))
         self.sp_fps.setValue(int(ex.fps))
-        j = self.cb_size.findData((ex.width, ex.height))
+        # findData(tuple) 在 PySide6 里匹配不上，必须自己遍历 itemData
+        target_size = (int(ex.width), int(ex.height))
+        j = -1
+        for k in range(self.cb_size.count()):
+            data = self.cb_size.itemData(k)
+            if isinstance(data, (tuple, list)) and len(data) == 2:
+                if (int(data[0]), int(data[1])) == target_size:
+                    j = k
+                    break
         self.cb_size.setCurrentIndex(j if j >= 0 else self.cb_size.count() - 1)
         self.sp_w.setValue(int(ex.width))
         self.sp_h.setValue(int(ex.height))
@@ -1106,6 +1120,10 @@ class SettingsPanel(QWidget):
         self.chk_safe = QCheckBox("预览显示安全框和尺寸标注")
         self.chk_safe.toggled.connect(self._apply)
         f.addRow("", self.chk_safe)
+        self.chk_updates = QCheckBox("启动时检查更新")
+        self.chk_updates.setToolTip("启动约 2.5 秒后查一次 GitHub Release，6 小时内不重复")
+        self.chk_updates.toggled.connect(self._apply)
+        f.addRow("", self.chk_updates)
         root.addWidget(box)
 
         box2 = QGroupBox("快捷键（部分）")
@@ -1142,6 +1160,7 @@ class SettingsPanel(QWidget):
         self.cb_rate.setCurrentIndex(max(0, i))
         self.sp_tap.setValue(s.tap_min_ms)
         self.chk_safe.setChecked(s.show_safe)
+        self.chk_updates.setChecked(bool(s.check_updates))
         self._loading = False
 
     def _browse_ffmpeg(self) -> None:
@@ -1160,5 +1179,6 @@ class SettingsPanel(QWidget):
         s.rate = float(self.cb_rate.currentData())
         s.tap_min_ms = self.sp_tap.value()
         s.show_safe = self.chk_safe.isChecked()
+        s.check_updates = self.chk_updates.isChecked()
         s.save()
         self.changed.emit()

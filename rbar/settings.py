@@ -46,6 +46,7 @@ class AppSettings:
         s.setValue("last_dir", self.last_dir)
         s.setValue("recent", self.recent[:12])
         s.setValue("show_safe", "true" if self.show_safe else "false")
+        s.setValue("geometry", self.geometry)
         s.sync()
 
     def add_recent(self, path: str) -> None:

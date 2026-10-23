@@ -35,8 +35,13 @@ def find_ffmpeg() -> str:
     return ""
 
 
-def find_ffprobe() -> str:
-    ff = find_ffmpeg()
+def find_ffprobe(ffmpeg: str = "") -> str:
+    """找 ffprobe：优先用与给定 ffmpeg 同目录的那个。
+
+    调用方有 settings.ffmpeg（用户手动指定）时必须传进来 —— 否则在
+    “ffmpeg 不在 PATH、只在设置里指定”的机器上，视频探测会静默失败。
+    """
+    ff = ffmpeg or find_ffmpeg()
     if ff:
         p = os.path.join(os.path.dirname(ff), "ffprobe.exe")
         if os.path.isfile(p):
@@ -468,6 +473,10 @@ class AudioEngine(QObject):
         self.path = ""
         self.duration_ms = 0.0
         self._pcm = np.zeros((0, 2), dtype=np.int16)
+        # 换工程时位置必须回到 0：否则新工程会沿用旧工程的播放头
+        self._seek_ms = 0.0
+        self._pos_at = 0.0
+        self._pos_clock = 0.0
 
     # ------------------------------------------------------------- 预渲染
     def _resample(self) -> np.ndarray:
@@ -504,7 +513,7 @@ class AudioEngine(QObject):
         click_lo = (np.sin(2 * np.pi * 1000.0 * t) * env * 0.34 * 32767).astype(np.int16)
         n = pcm.shape[0]
         for i, ms in enumerate(self._beats_ms):
-            pos = int(ms / 1000.0 * sr / max(0.01, self._rate))
+            pos = int(ms / 1000.0 * sr)
             if pos < 0 or pos >= n:
                 continue
             end = min(n, pos + dur)
@@ -515,7 +524,10 @@ class AudioEngine(QObject):
 
     # ------------------------------------------------------------- 设置
     def set_beats(self, beats_ms: list[float]) -> None:
-        self._beats_ms = list(beats_ms)
+        beats = list(beats_ms)
+        if beats == self._beats_ms:      # 音符编辑通常不改节拍，避免每次全量重建 PCM
+            return
+        self._beats_ms = beats
         if self._metronome:
             self._rebuild()
 
@@ -550,6 +562,11 @@ class AudioEngine(QObject):
 
     def set_latency_ms(self, ms: float) -> None:
         self._latency_ms = float(ms)
+
+    @property
+    def latency_ms(self) -> float:
+        """用户手动校准量（毫秒）；主窗口在播放位置换算时使用。"""
+        return self._latency_ms
 
     # ------------------------------------------------------------- 传输
     @property
