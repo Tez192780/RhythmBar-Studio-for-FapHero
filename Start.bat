@@ -14,9 +14,9 @@ if errorlevel 1 (
   exit /b 1
 )
 
-python -c "import PySide6" >nul 2>nul
+python -c "import PySide6, numpy" >nul 2>nul
 if errorlevel 1 (
-  echo   首次运行，正在安装依赖 PySide6（约 100MB，只需一次）...
+  echo   首次运行，正在安装依赖 PySide6 / numpy（约 100MB，只需一次）...
   python -X utf8 -m pip install -r requirements.txt
   if errorlevel 1 (
     echo   依赖安装失败，请检查网络后重试，或手动执行：python -m pip install -r requirements.txt

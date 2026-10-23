@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-echo 打包成单文件 exe（体积约 150MB，首次需要联网安装 pyinstaller）
+echo 打包成 exe 文件夹（PyInstaller onedir，首次需要联网安装 pyinstaller）
 echo.
 python -X utf8 -m pip install pyinstaller
 python -X utf8 -m PyInstaller --noconfirm --windowed --clean ^
