@@ -184,23 +184,23 @@ class RenderSettings:
 
 # ----------------------------------------------------------------- 导出设置
 FORMATS = {
-    "mov_prores": "MOV · ProRes 4444（带透明通道，PR/AE/达芬奇最稳）",
-    "mov_qtrle": "MOV · QuickTime 动画 RLE（带透明通道，剪映友好、体积小）",
-    "webm_vp9": "WebM · VP9 alpha（带透明通道，体积最小，浏览器/部分软件）",
+    "mov_qtrle": "MOV · QuickTime 动画 RLE（透明，剪映友好，体积中等，推荐）",
+    "webm_vp9": "WebM · VP9 alpha（透明，体积最小，兼容性一般）",
+    "mov_prores": "MOV · ProRes 4444（透明，PR/AE/达芬奇最稳，体积很大）",
     "webm_vp8": "WebM · VP8 alpha（兼容老一点的解码器）",
-    "png_seq": "PNG 序列（带透明通道，最保险，体积大）",
+    "png_seq": "PNG 序列（透明，最保险，体积很大）",
     "mp4_black": "MP4 · 黑底（无透明，剪辑里用「滤色/变亮」混合模式去黑）",
 }
 
 
 @dataclass
 class ExportSettings:
-    fmt: str = "mov_prores"
-    fps: int = 60
+    fmt: str = "mov_qtrle"
+    fps: int = 30
     width: int = 1920
     height: int = 120
     supersample: int = 2         # 1/2/3 倍超采样抗锯齿
-    quality: str = "high"        # fast | balanced | high
+    quality: str = "balanced"    # fast | balanced | high
     range_mode: str = "song"     # song（整首）| notes（最后音符后留白）| custom
     t_start: float = 0.0         # 毫秒
     t_end: float = 0.0           # 毫秒（0 = 自动）

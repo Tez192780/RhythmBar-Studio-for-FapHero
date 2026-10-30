@@ -8,6 +8,7 @@
 *.txt text eol=lf
 *.json text eol=lf
 *.toml text eol=lf
+package.spec text eol=lf
 
 # 二进制
 *.png binary

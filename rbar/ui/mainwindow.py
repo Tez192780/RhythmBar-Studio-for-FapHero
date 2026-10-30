@@ -50,8 +50,8 @@ from ..audio import (
 )
 from ..demo import make_demo_project
 from ..doc import Doc
-from ..exporter import compute_range, export_still, export_video
-from ..model import Note, Project
+from ..exporter import compute_range, estimate_size_mb, export_still, export_video
+from ..model import FORMATS, Note, Project
 from ..settings import AppSettings
 from ..tasks import Task
 from ..timing import BpmSegment
@@ -65,6 +65,10 @@ AUDIO_EXT = (".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma", "
 VIDEO_EXT = (".mp4", ".mov", ".mkv", ".avi", ".webm", ".flv", ".wmv", ".m4v", ".ts", ".mpg", ".mpeg")
 PROJECT_EXT = ".rbarproj"
 PEAK_BUCKETS = 30000
+# 参考画面/时间轴胶片条的采样率。以前只有 4fps，预览明显发顿；12fps 更顺，
+# 3000 帧上限让 3 分钟视频仍保持 12fps，更长的视频自动降采样。
+FILMSTRIP_FPS = 12.0
+FILMSTRIP_MAX_FRAMES = 3000
 
 
 class MainWindow(QMainWindow):
@@ -96,6 +100,7 @@ class MainWindow(QMainWindow):
         self._media_busy = False
         self._spec_token = 0
         self._auto_token = 0
+        self._ctrl_tool_prev: str | None = None
         self._last_autosave = 0.0
         self._fps_t = time.perf_counter()
         self._last_status = 0.0
@@ -108,6 +113,9 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._build_actions()
         self._wire()
+        qapp = QApplication.instance()
+        if qapp is not None:
+            qapp.installEventFilter(self)      # Ctrl 按住临时切放置模式
 
         self._timer = QTimer(self)
         self._timer.setInterval(16)
@@ -479,7 +487,7 @@ class MainWindow(QMainWindow):
 
     def _update_title(self) -> None:
         p = self.doc.project.path
-        name = os.path.basename(p) if p else "未命名工程"
+        name = os.path.basename(p) if p else i18n.tr("未命名工程")
         self.setWindowTitle(f"{APP_NAME} — {name}{'*' if self.doc.dirty else ''}")
 
     def _on_dirty(self, _v: bool) -> None:
@@ -526,7 +534,7 @@ class MainWindow(QMainWindow):
         self.menu_recent.clear()
         items = [p for p in self.settings.recent if os.path.isfile(p)]
         if not items:
-            self.menu_recent.addAction("（空）").setEnabled(False)
+            self.menu_recent.addAction(i18n.tr("（空）")).setEnabled(False)
             return
         for p in items:
             a = QAction(os.path.basename(p), self)
@@ -603,6 +611,8 @@ class MainWindow(QMainWindow):
         self.refresh_all()
         self.timeline.update()
         self.preview.update()
+        self.refvideo.update()             # 这两个是自绘控件，不会走 translate_tree
+        self.spectrum.update()
         self.statusBar().showMessage(
             {"zh": "界面语言：中文", "ja": "表示言語：日本語", "en": "UI language: English"}[code],
             5000)
@@ -693,7 +703,7 @@ class MainWindow(QMainWindow):
             sp = spectrogram(samples, sr)
             return sp, time.perf_counter() - t0
 
-        self.statusBar().showMessage("正在计算频谱图…")
+        self.statusBar().showMessage(i18n.tr("正在计算频谱图…"))
         task = Task(work, parent=self)
         self._spec_task = task
 
@@ -708,7 +718,8 @@ class MainWindow(QMainWindow):
             sp, sec = res
             self.spec = sp
             self.timeline.set_spectrogram(sp if self.a_spec.isChecked() else None)
-            self.statusBar().showMessage(f"频谱图完成（{sec:.1f}s，{sp.frames} 列）", 4000)
+            self.statusBar().showMessage(
+                i18n.trf("频谱图完成（{sec:.1f}s，{frames} 列）", sec=sec, frames=sp.frames), 4000)
 
         def on_fail(msg: str) -> None:
             if self._spec_task is task:
@@ -752,7 +763,7 @@ class MainWindow(QMainWindow):
         """导入参考视频（也可以直接拖进窗口）。"""
         if not path:
             path, _ = QFileDialog.getOpenFileName(
-                self, "导入音视频", self.settings.last_dir,
+                self, i18n.tr("导入音视频"), self.settings.last_dir,
                 "音视频 (*.mp3 *.wav *.flac *.m4a *.mp4 *.mov *.mkv *.avi *.webm *.flv *.wmv);;"
                 "所有文件 (*)")
         if path:
@@ -765,19 +776,21 @@ class MainWindow(QMainWindow):
         if not clips or self.silent:
             return "replace" if not clips else "append"
         box = QMessageBox(self)
-        box.setWindowTitle("导入媒体")
+        box.setWindowTitle(i18n.tr("导入媒体"))
         box.setIcon(QMessageBox.Question)
-        kind = "视频" if is_video else "音频"
-        box.setText(f"要导入的{kind}：{os.path.basename(path)}")
-        box.setInformativeText(
-            f"当前时间轴上已有 {len(clips)} 段媒体（总长 {self._video_len() / 1000:.1f}s）。\n\n"
-            f"· 追加：接在最后一段之后（保持现有内容）\n"
-            f"· 替换：清空现有媒体，只留这一段\n"
-            f"· 插入：放到播放头位置，其余片段往后顺延")
-        b_append = box.addButton("追加到末尾", QMessageBox.AcceptRole)
-        b_insert = box.addButton("插入到播放头", QMessageBox.ActionRole)
-        b_replace = box.addButton("替换全部", QMessageBox.DestructiveRole)
-        box.addButton("取消", QMessageBox.RejectRole)
+        kind = i18n.tr("视频" if is_video else "音频")
+        box.setText(i18n.trf("要导入的{kind}：{name}",
+                             kind=kind, name=os.path.basename(path)))
+        box.setInformativeText(i18n.trf(
+            "当前时间轴上已有 {n} 段媒体（总长 {sec:.1f}s）。\n\n"
+            "· 追加：接在最后一段之后（保持现有内容）\n"
+            "· 替换：清空现有媒体，只留这一段\n"
+            "· 插入：放到播放头位置，其余片段往后顺延",
+            n=len(clips), sec=self._video_len() / 1000.0))
+        b_append = box.addButton(i18n.tr("追加到末尾"), QMessageBox.AcceptRole)
+        b_insert = box.addButton(i18n.tr("插入到播放头"), QMessageBox.ActionRole)
+        b_replace = box.addButton(i18n.tr("替换全部"), QMessageBox.DestructiveRole)
+        box.addButton(i18n.tr("取消"), QMessageBox.RejectRole)
         box.setDefaultButton(b_append)
         box.exec()
         clicked = box.clickedButton()
@@ -848,8 +861,9 @@ class MainWindow(QMainWindow):
         film = None
         if is_video:
             info = probe_video(path, find_ffprobe(ffmpeg))
-            film = extract_filmstrip(path, info, ffmpeg, target_fps=4.0, thumb_h=72,
-                                     max_frames=1500)
+            film = extract_filmstrip(path, info, ffmpeg,
+                                     target_fps=FILMSTRIP_FPS, thumb_h=72,
+                                     max_frames=FILMSTRIP_MAX_FRAMES)
         return samples, sr, pk, film
 
     def _media_failed(self, msg: str) -> None:
@@ -1036,7 +1050,7 @@ class MainWindow(QMainWindow):
     # ================================================================ 音频
     def open_audio(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "导入音频", self.settings.last_dir,
+            self, i18n.tr("导入音频"), self.settings.last_dir,
             "音频 (*.mp3 *.wav *.flac *.m4a *.aac *.ogg *.opus *.wma *.aiff);;所有文件 (*)")
         if path:
             self.import_media(path)
@@ -1055,18 +1069,20 @@ class MainWindow(QMainWindow):
         QApplication.restoreOverrideCursor()
         if self.silent:
             print("[错误]", msg, flush=True)
-            self.statusBar().showMessage("操作失败（详情见控制台）", 5000)
+            self.statusBar().showMessage(i18n.tr("操作失败（详情见控制台）"), 5000)
             return
-        QMessageBox.critical(self, "出错", msg)
-        self.statusBar().showMessage("操作失败", 5000)
+        QMessageBox.critical(self, i18n.tr("出错"), msg)
+        self.statusBar().showMessage(i18n.tr("操作失败"), 5000)
 
     def _warn(self, title: str, text: str) -> None:
+        title, text = i18n.tr(title), i18n.tr(text)
         if self.silent:
             print(f"[提示] {title}: {text}", flush=True)
         else:
             QMessageBox.warning(self, title, text)
 
     def _info(self, title: str, text: str) -> None:
+        title, text = i18n.tr(title), i18n.tr(text)
         if self.silent:
             print(f"[提示] {title}: {text}", flush=True)
         else:
@@ -1078,7 +1094,8 @@ class MainWindow(QMainWindow):
         now = time.perf_counter()
         gap_ms = float(self.settings.tap_min_ms)
         if gap_ms > 0 and self._last_tap_at and (now - self._last_tap_at) * 1000.0 < gap_ms:
-            self.statusBar().showMessage(f"打点太快（最小间隔 {gap_ms:g} ms）", 700)
+            self.statusBar().showMessage(
+                i18n.trf("打点太快（最小间隔 {ms:g} ms）", ms=gap_ms), 700)
             return
         self._last_tap_at = now
         pos = self.position_ms
@@ -1092,7 +1109,7 @@ class MainWindow(QMainWindow):
         nn = Note(pos, rows[lane], lane)
         self.doc.edit("打点", lambda: self.doc.project.chart.add(nn))
         self.doc.set_selection([nn])
-        self.statusBar().showMessage(f"打点 @ {fmt_time(pos)}", 1200)
+        self.statusBar().showMessage(i18n.trf("打点 @ {t}", t=fmt_time(pos)), 1200)
 
     def select_all(self) -> None:
         self.doc.set_selection(list(self.doc.project.chart.notes))
@@ -1107,7 +1124,7 @@ class MainWindow(QMainWindow):
         self._clipboard = [n.to_dict() for n in sel]
         self._clip_anchor = sel[0].t
         self.timeline.set_clipboard_state(True)
-        self.statusBar().showMessage(f"已复制 {len(sel)} 个音符", 2000)
+        self.statusBar().showMessage(i18n.trf("已复制 {n} 个音符", n=len(sel)), 2000)
 
     def paste_notes(self, at_ms: float | None = None, at_row: int | None = None) -> None:
         """粘贴：默认落在鼠标处（没有鼠标位置就落播放头），可整块挪到别的音符行。
@@ -1148,7 +1165,7 @@ class MainWindow(QMainWindow):
         self.doc.commit_external("粘贴", before)
         self.doc.set_selection(added)
         self.on_notes_changed()
-        self.statusBar().showMessage(f"粘贴 {len(added)} 个音符", 2000)
+        self.statusBar().showMessage(i18n.trf("粘贴 {n} 个音符", n=len(added)), 2000)
 
     def duplicate_forward(self) -> None:
         sel = sorted(self.doc.selection, key=lambda n: n.t)
@@ -1214,21 +1231,24 @@ class MainWindow(QMainWindow):
             st.loop_on = True
             self.chk_loop.setChecked(True)
             self.statusBar().showMessage(
-                f"循环区间 {fmt_time(st.loop_a)} → {fmt_time(st.loop_b)}", 3000)
+                i18n.trf("循环区间 {a} → {b}",
+                         a=fmt_time(st.loop_a), b=fmt_time(st.loop_b)), 3000)
         elif st.loop_b > st.loop_a:
             # 已有循环区间：单独按 L 把终点挪到播放头
             st.loop_b = max(pos, st.loop_a + 100.0)
             st.loop_on = True
             self.chk_loop.setChecked(True)
             self.statusBar().showMessage(
-                f"循环终点改为 {fmt_time(st.loop_b)}（要重设起点请先清除循环）", 3000)
+                i18n.trf("循环终点改为 {t}（要重设起点请先清除循环）",
+                         t=fmt_time(st.loop_b)), 3000)
         else:
             st.loop_a = pos
             st.loop_b = pos
             st.loop_on = False
             st.loop_armed = True
             self.chk_loop.setChecked(False)
-            self.statusBar().showMessage("已设置循环起点，再按一次 L 设置终点", 3000)
+            self.statusBar().showMessage(
+                i18n.tr("已设置循环起点，再按一次 L 设置终点"), 3000)
         self.timeline.update()
 
     def clear_loop(self) -> None:
@@ -1298,12 +1318,12 @@ class MainWindow(QMainWindow):
         chart.add_many(new_notes)
         self.doc.commit_external("区间填充", before)
         self.on_notes_changed()
-        self.statusBar().showMessage(f"已填充 {len(chart) - base} 个音符", 5000)
+        self.statusBar().showMessage(i18n.trf("已填充 {n} 个音符", n=len(chart) - base), 5000)
 
     # ============================================================ 鼠标模式
     TOOLS = ("select", "draw", "range")
 
-    def set_tool(self, name: str) -> None:
+    def set_tool(self, name: str, announce: bool = True) -> None:
         st = self.doc.state
         st.tool = name if name in self.TOOLS else "select"
         self.a_select_tool.setChecked(st.tool == "select")
@@ -1312,10 +1332,44 @@ class MainWindow(QMainWindow):
         cur = {"draw": Qt.CrossCursor, "range": Qt.SizeHorCursor}.get(st.tool, Qt.ArrowCursor)
         self.timeline.setCursor(cur)
         self.timeline.update()
-        self.statusBar().showMessage({
-            "draw": "鼠标模式：放置音符（按住拖动可连续刷；右键仍可改类型/删除）",
-            "range": "鼠标模式：框选区间（在任意位置横向拖动选出时间区间，右键可填充/设为循环）",
-        }.get(st.tool, "鼠标模式：选择 / 拖拽（空白拖动=框选音符，标尺/波形拖动=拖播放头）"), 5000)
+        if announce:
+            msg = {
+                "draw": "鼠标模式：放置音符（按住拖动可连续刷；右键仍可改类型/删除）",
+                "range": "鼠标模式：框选区间（在任意位置横向拖动选出时间区间，右键可填充/设为循环）",
+            }.get(st.tool, "鼠标模式：选择 / 拖拽（空白拖动=框选音符，标尺/波形拖动=拖播放头）")
+            self.statusBar().showMessage(i18n.tr(msg), 5000)
+
+    def _restore_ctrl_tool(self) -> None:
+        prev = self._ctrl_tool_prev
+        if prev is None:
+            return
+        self._ctrl_tool_prev = None
+        self.set_tool(prev, announce=False)
+
+    def eventFilter(self, obj, ev) -> bool:  # noqa: N802
+        """按住 Ctrl 临时进入放置模式，松开恢复原模式。
+
+        Ctrl+滚轮缩放、Ctrl+Z 等快捷键仍照常工作；在输入框里按 Ctrl 不抢。
+        """
+        try:
+            et = ev.type()
+            if et == QEvent.KeyPress and ev.key() == Qt.Key_Control and not ev.isAutoRepeat():
+                if self.isVisible() and QApplication.activeModalWidget() is None:
+                    fw = QApplication.focusWidget()
+                    if not isinstance(fw, (QLineEdit, QAbstractSpinBox, QComboBox,
+                                           QTextEdit, QPlainTextEdit)):
+                        if self._ctrl_tool_prev is None:
+                            self._ctrl_tool_prev = self.doc.state.tool
+                            self.set_tool("draw", announce=False)
+                            self.statusBar().showMessage(
+                                i18n.tr("按住 Ctrl：临时放置音符，松开恢复"), 1200)
+            elif et == QEvent.KeyRelease and ev.key() == Qt.Key_Control:
+                self._restore_ctrl_tool()
+            elif et == QEvent.ApplicationDeactivate or et == QEvent.WindowDeactivate:
+                self._restore_ctrl_tool()
+        except Exception:
+            pass
+        return super().eventFilter(obj, ev)
 
     def toggle_tool(self) -> None:
         i = self.TOOLS.index(self.doc.state.tool) if self.doc.state.tool in self.TOOLS else 0
@@ -1362,13 +1416,13 @@ class MainWindow(QMainWindow):
         self.doc.commit_external("Tap 测速", before)
         self.on_chart_changed()
         self.panel_chart.refresh()
-        self.statusBar().showMessage(f"已在播放头插入 {bpm:g} BPM 段", 4000)
+        self.statusBar().showMessage(i18n.trf("已在播放头插入 {bpm:g} BPM 段", bpm=bpm), 4000)
 
     def auto_bpm(self) -> None:
         if self.engine.samples is None:
             self._info("没有音频", "请先载入音频。")
             return
-        self.statusBar().showMessage("正在分析 BPM…")
+        self.statusBar().showMessage(i18n.tr("正在分析 BPM…"))
 
         def work():
             bpm, conf = estimate_bpm(self.engine.samples, self.engine.sr)
@@ -1385,11 +1439,11 @@ class MainWindow(QMainWindow):
         if bpm <= 0:
             self._info("没测出来", "没能估计出 BPM，可以用 Tap 测速手动打。")
             return
-        msg = (f"估计 BPM：{bpm:.2f}（置信度 {conf * 100:.0f}%）\n"
-               f"建议节拍偏移：{off:.1f} ms\n\n"
-               f"「是」= 整首统一用这个 BPM 并设好偏移\n"
-               f"「否」= 只在播放头插入这个 BPM 段")
-        r = QMessageBox.question(self, "自动检测 BPM", msg,
+        msg = i18n.trf(
+            "估计 BPM：{bpm:.2f}（置信度 {conf:.0f}%）\n建议节拍偏移：{off:.1f} ms\n\n"
+            "「是」= 整首统一用这个 BPM 并设好偏移\n「否」= 只在播放头插入这个 BPM 段",
+            bpm=bpm, conf=conf * 100, off=off)
+        r = QMessageBox.question(self, i18n.tr("自动检测 BPM"), msg,
                                  QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel) if not self.silent \
             else QMessageBox.Yes
         if r == QMessageBox.Cancel:
@@ -1436,7 +1490,7 @@ class MainWindow(QMainWindow):
         chart.add_many(new_notes)
         self.doc.commit_external("自动铺点", before)
         self.on_notes_changed()
-        self.statusBar().showMessage(f"已生成 {len(new_notes)} 个音符", 5000)
+        self.statusBar().showMessage(i18n.trf("已生成 {n} 个音符", n=len(new_notes)), 5000)
 
     def _auto_notes_detect(self, params: dict) -> None:
         sens = params["sensitivity"]
@@ -1486,14 +1540,15 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard():
             return
         self.set_project(Project())
-        self.statusBar().showMessage("新工程", 3000)
+        self.statusBar().showMessage(i18n.tr("新工程"), 3000)
 
     def load_demo(self) -> None:
         """示例工程：没音频也能立刻看到/试用效果。"""
         if not self._confirm_discard():
             return
         self.set_project(make_demo_project(bars=16))
-        self.statusBar().showMessage("已载入示例工程：可以直接改音符、换外观、试导出", 8000)
+        self.statusBar().showMessage(
+            i18n.tr("已载入示例工程：可以直接改音符、换外观、试导出"), 8000)
 
     def set_project(self, project: Project, audio_path: str = "") -> None:
         self.pause()
@@ -1531,12 +1586,14 @@ class MainWindow(QMainWindow):
             restore.append(clip)
         gone = len(project.clips) - len(restore)
         if gone:
-            self.statusBar().showMessage(f"有 {gone} 段媒体文件找不到了，已跳过", 7000)
+            self.statusBar().showMessage(
+                i18n.trf("有 {n} 段媒体文件找不到了，已跳过", n=gone), 7000)
         if restore:
             self._restore_queue = list(restore)
             QTimer.singleShot(200, self._restore_next)
         elif len(project.chart) == 0:
-            self.statusBar().showMessage("空工程：先导入音频/视频，或用「示例工程」练手", 6000)
+            self.statusBar().showMessage(
+                i18n.tr("空工程：先导入音频/视频，或用「示例工程」练手"), 6000)
         self._refresh_recent()
         # 换工程后播放头必须回到开头，不能沿用旧工程的 _seek_ms
         self.seek(0.0)
@@ -1550,14 +1607,14 @@ class MainWindow(QMainWindow):
             if self._films:
                 self.refvideo.setVisible(self.a_ref.isChecked())
             self.statusBar().showMessage(
-                f"工程已就绪：{len(self.doc.project.clips)} 段媒体 / "
-                f"{self._video_len() / 1000:.1f}s", 6000)
+                i18n.trf("工程已就绪：{n} 段媒体 / {sec:.1f}s",
+                         n=len(self.doc.project.clips), sec=self._video_len() / 1000.0), 6000)
             return
         clip = q.pop(0)
         ff = self.settings.ffmpeg
         if not ff or not os.path.isfile(ff):
             self.statusBar().showMessage(
-                "找不到 ffmpeg，工程里的媒体没有恢复；请在「设置」里指定 ffmpeg 后重新打开", 9000)
+                i18n.tr("找不到 ffmpeg，工程里的媒体没有恢复；请在「设置」里指定 ffmpeg 后重新打开"), 9000)
             return
         task = Task(self._media_worker, clip.path, clip.kind == "video", ff,
                     bool(clip.has_audio), parent=self)
@@ -1582,7 +1639,7 @@ class MainWindow(QMainWindow):
 
     def open_project(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "打开工程", self.settings.last_dir, f"节奏条工程 (*{PROJECT_EXT});;所有文件 (*)")
+            self, i18n.tr("打开工程"), self.settings.last_dir, f"节奏条工程 (*{PROJECT_EXT});;所有文件 (*)")
         if path:
             self.open_path(path)
 
@@ -1606,7 +1663,7 @@ class MainWindow(QMainWindow):
                 self.settings.add_recent(path)
                 self.settings.save()
                 self._refresh_recent()
-                self.statusBar().showMessage(f"已打开 {os.path.basename(path)}", 5000)
+                self.statusBar().showMessage(i18n.trf("已打开 {name}", name=os.path.basename(path)), 5000)
         except Exception as e:  # noqa: BLE001
             self._task_failed(f"打不开 {path}：{e}")
 
@@ -1619,15 +1676,15 @@ class MainWindow(QMainWindow):
             self.settings.add_recent(self.doc.project.path)
             self.settings.save()
             self._refresh_recent()
-            self.statusBar().showMessage("已保存", 3000)
+            self.statusBar().showMessage(i18n.tr("已保存"), 3000)
             return True
         except Exception as e:  # noqa: BLE001
-            QMessageBox.critical(self, "保存失败", str(e))
+            QMessageBox.critical(self, i18n.tr("保存失败"), str(e))
             return False
 
     def save_project_as(self) -> bool:
         path, _ = QFileDialog.getSaveFileName(
-            self, "保存工程", os.path.join(self.settings.last_dir, "我的节奏条" + PROJECT_EXT),
+            self, i18n.tr("保存工程"), os.path.join(self.settings.last_dir, "我的节奏条" + PROJECT_EXT),
             f"节奏条工程 (*{PROJECT_EXT})")
         if not path:
             return False
@@ -1682,10 +1739,16 @@ class MainWindow(QMainWindow):
         t0, t1 = compute_range(self.doc.project, self.engine.duration_ms)
         frames = max(1, int(round((t1 - t0) / 1000.0 * ex.fps)))
         report = self._estimate_report(frames)
+        est = estimate_size_mb(ex.fmt, ex.width, ex.height, frames)
+        msg = i18n.trf(
+            "格式：{fmt}\n尺寸：{w}×{h} @ {fps}fps（{ss}× 超采样）\n"
+            "帧数：{frames}（{dur}）\n预计体积：约 {size:.0f} MB（内容不同会有变化）\n"
+            "预计用时：{time}\n\n开始导出？",
+            fmt=i18n.tr(FORMATS.get(ex.fmt, ex.fmt)), w=ex.width, h=ex.height,
+            fps=ex.fps, ss=ex.supersample,
+            frames=frames, dur=fmt_time(t1 - t0), size=est, time=report)
         r = QMessageBox.question(
-            self, "开始导出",
-            f"格式：{ex.fmt}\n尺寸：{ex.width}×{ex.height} @ {ex.fps}fps（{ex.supersample}× 超采样）\n"
-            f"帧数：{frames}（{fmt_time(t1 - t0)}）\n预计：{report}\n\n开始导出？",
+            self, i18n.tr("开始导出"), msg,
             QMessageBox.Ok | QMessageBox.Cancel) if not self.silent else QMessageBox.Ok
         if r != QMessageBox.Ok:
             return
@@ -1697,13 +1760,13 @@ class MainWindow(QMainWindow):
                  "mp4_black": 300, "webm_vp8": 120, "webm_vp9": 60}.get(fmt, 200)
         sec = frames / speed
         if sec < 60:
-            return f"约 {sec:.0f} 秒"
-        return f"约 {sec / 60:.1f} 分钟"
+            return i18n.trf("约 {sec:.0f} 秒", sec=sec)
+        return i18n.trf("约 {sec:.1f} 分钟", sec=sec / 60)
 
     def _run_export(self, t0: float, t1: float, frames: int) -> None:
         ex = self.doc.project.export
-        dlg = QProgressDialog("正在导出…", "取消", 0, frames, self)
-        dlg.setWindowTitle("导出视频")
+        dlg = QProgressDialog(i18n.tr("正在导出…"), i18n.tr("取消"), 0, frames, self)
+        dlg.setWindowTitle(i18n.tr("导出视频"))
         dlg.setWindowModality(Qt.WindowModal)
         dlg.setMinimumDuration(0)
         dlg.setAutoClose(False)
@@ -1723,26 +1786,29 @@ class MainWindow(QMainWindow):
         def on_progress(done: int, total: int, eta: float) -> None:
             dlg.setMaximum(total)
             dlg.setValue(done)
-            dlg.setLabelText(f"导出中… {done}/{total} 帧　剩余约 {eta:.0f}s")
+            dlg.setLabelText(i18n.trf("导出中… {done}/{total} 帧　剩余约 {eta:.0f}s",
+                                      done=done, total=total, eta=eta))
 
         def on_done(res) -> None:
             dlg.close()
             QApplication.restoreOverrideCursor()
             if getattr(res, "cancelled", False):
-                self.statusBar().showMessage("导出已取消", 5000)
+                self.statusBar().showMessage(i18n.tr("导出已取消"), 5000)
                 return
             dur = time.perf_counter() - started
-            self.statusBar().showMessage(f"导出完成：{res.path}", 15000)
+            self.statusBar().showMessage(i18n.trf("导出完成：{path}", path=res.path), 15000)
             size = ""
             if os.path.isfile(res.path):
-                size = f"\n文件大小：{os.path.getsize(res.path) / 1048576:.1f} MB"
+                size = i18n.trf("\n文件大小：{size:.1f} MB",
+                                size=os.path.getsize(res.path) / 1048576)
             if self.silent:
                 print(f"[导出完成] {res.frames} 帧，{dur:.1f}s，{res.path}{size}", flush=True)
             else:
                 QMessageBox.information(
-                    self, "导出完成",
-                    f"已导出 {res.frames} 帧，用时 {dur:.1f}s\n{res.path}{size}\n\n"
-                    f"导入剪辑软件后，把它放在原视频上层即可（透明通道已带）。")
+                    self, i18n.tr("导出完成"),
+                    i18n.trf("已导出 {frames} 帧，用时 {dur:.1f}s\n{path}{size}\n\n"
+                             "导入剪辑软件后，把它放在原视频上层即可（透明通道已带）。",
+                             frames=res.frames, dur=dur, path=res.path, size=size))
             if ex.open_after and not self.silent:
                 self._open_folder(os.path.dirname(os.path.abspath(res.path)))
 
@@ -1767,13 +1833,14 @@ class MainWindow(QMainWindow):
         ex = self.doc.project.export
         base = os.path.splitext(os.path.basename(self.doc.project.path or "节奏条"))[0]
         name = f"{base}_{int(self.position_ms)}ms.png"
-        path, _ = QFileDialog.getSaveFileName(self, "导出当前帧", os.path.join(self.settings.last_dir, name),
+        path, _ = QFileDialog.getSaveFileName(self, i18n.tr("导出当前帧"),
+                                              os.path.join(self.settings.last_dir, name),
                                               "PNG 图片 (*.png)")
         if not path:
             return
         try:
             export_still(self.doc.project, self.position_ms, path, ex.width, ex.height, ex.supersample)
-            self.statusBar().showMessage(f"已导出图片：{path}", 8000)
+            self.statusBar().showMessage(i18n.trf("已导出图片：{path}", path=path), 8000)
             if ex.open_after:
                 self._open_folder(os.path.dirname(os.path.abspath(path)))
         except Exception as e:  # noqa: BLE001
@@ -1797,7 +1864,7 @@ class MainWindow(QMainWindow):
         task = Task(fetch_latest, parent=self)
         self._update_task = task
         if not auto:
-            self.statusBar().showMessage("正在检查更新…")
+            self.statusBar().showMessage(i18n.tr("正在检查更新…"))
 
         def stamp() -> None:
             import time as _t
@@ -1888,16 +1955,18 @@ class MainWindow(QMainWindow):
             "  把节拍网格线（可拖 BPM 段边界）跟竖纹对齐就准了。\n"
             "  左下角还有实时频谱条，播放时能看当前频段能量。\n"
             "  视图菜单里可分别开关频谱图 / 实时频谱 / 胶片条。\n\n"
-            "【两种鼠标模式（V / B / R / Tab 切换）】\n"
+            "【三种鼠标模式（V / B / R / Tab 切换）】\n"
             "  选择拖拽：空白拖动=框选音符；拖音符=移动；拖右侧把手=变长条\n"
             "  放置音符：单击=加点；按住拖动=沿网格连续刷（一次撤销）\n"
             "  框选区间：在任意位置横向拖动=选出时间区间（Shift+拖动同效）\n"
+            "  另外：按住 Ctrl 会临时切到放置模式，松开恢复原模式\n"
             "  注意：标尺/波形处**直接拖动是拖播放头**，框选区间用 Shift 或 R 模式\n\n"
             "【框选区间 → 填充（不用手打时间）】\n"
-            "  框出区间后，右键「在这个区间填充音符…」或 工具菜单，选好间隔和类型即可。\n"
+            "  框出区间后，右键「在这个区间填充音符…」或 工具菜单，\n"
+            "  区间会自动采用当前框选，选好间隔和类型直接点「填充」即可。\n"
             "  右键还能「把区间设为循环区间」「清除区间选择」「清除循环区间」。\n\n"
             "【时间轴】\n"
-            "  右键 = 改类型/量化/删除/从这一点填充；Ctrl+拖 = 加选\n"
+            "  右键 = 改类型/量化/删除/从这一点填充（有框选时隐藏“从这一点”）\n"
             "  Ctrl+滚轮 = 缩放；Shift+滚轮 = 平移；中键拖动 = 平移\n\n"
             "【快捷键】\n"
             "  空格 播放/暂停　F 打点　V/B/R 鼠标模式　Tab 切换模式\n"
@@ -1997,7 +2066,8 @@ class MainWindow(QMainWindow):
         if k == Qt.Key_S and not mods:
             st.snap_on = not st.snap_on
             self.panel_chart.refresh()
-            self.statusBar().showMessage("吸附：" + ("开" if st.snap_on else "关"), 1500)
+            self.statusBar().showMessage(
+                i18n.tr("吸附：开") if st.snap_on else i18n.tr("吸附：关"), 1500)
             return
         super().keyPressEvent(ev)
 

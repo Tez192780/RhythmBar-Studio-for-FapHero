@@ -34,7 +34,7 @@ def _quality_preset(fmt: str, quality: str) -> list[str]:
     if fmt == "mov_prores":
         qs = {"fast": 10, "balanced": 7, "high": 4}[q]
         return ["-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le",
-                "-alpha_bits", "16", "-vendor", "apl0", "-qscale:v", str(qs)]
+                "-alpha_bits", "8", "-vendor", "apl0", "-qscale:v", str(qs)]
     if fmt == "mov_qtrle":
         return ["-c:v", "qtrle", "-pix_fmt", "argb"]
     if fmt == "webm_vp9":
@@ -62,6 +62,24 @@ def _quality_preset(fmt: str, quality: str) -> list[str]:
 
 def has_alpha(fmt: str) -> bool:
     return fmt != "mp4_black"
+
+
+# 实测参考系数（字节 / 像素 / 帧）：1920×120 演示工程，透明条。
+# 画面内容（渐变/噪点/长条）会明显影响实际体积，这里只用于给用户一个量级。
+_SIZE_BYTES_PER_PIXEL = {
+    "mov_prores": 0.245,
+    "mov_qtrle": 0.110,
+    "webm_vp9": 0.0052,
+    "webm_vp8": 0.0090,
+    "png_seq": 0.35,
+    "mp4_black": 0.0030,
+}
+
+
+def estimate_size_mb(fmt: str, w: int, h: int, frames: int) -> float:
+    """粗略估算导出体积（MB），用于界面提示；实际以文件为准。"""
+    factor = _SIZE_BYTES_PER_PIXEL.get(fmt, 0.11)
+    return max(0.0, float(w) * float(h) * max(0, int(frames)) * factor / 1048576.0)
 
 
 def build_command(fmt: str, w: int, h: int, fps: int, quality: str, out_path: str, ffmpeg: str) -> list[str]:

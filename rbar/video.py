@@ -123,7 +123,7 @@ class Filmstrip:
             img = QImage(arr.data, self.thumb_w, self.thumb_h,
                          self.thumb_w * 4, QImage.Format_RGBA8888)
             got = (img, arr)                 # 保住底层内存，QImage 不拷贝
-            if len(self._qimages) > 2000:
+            if len(self._qimages) > 4000:
                 self._qimages.clear()
             self._qimages[i] = got
         return got[0]

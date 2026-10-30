@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..i18n import translate_tree
+from ..i18n import tr, trf, translate_tree
 from .panels import FloatSlider
 
 
@@ -69,6 +69,8 @@ class BpmSegmentDialog(QDialog):
         btns.rejected.connect(self.reject)
         lay.addWidget(btns)
         translate_tree(self)
+        btns.button(QDialogButtonBox.Ok).setText(tr("确定"))
+        btns.button(QDialogButtonBox.Cancel).setText(tr("取消"))
 
     def values(self) -> tuple[float, float]:
         return float(self.sp_time.value()), float(self.sp_bpm.value())
@@ -89,7 +91,7 @@ class TapTempoDialog(QDialog):
         self.big = QPushButton("拍！")
         self.big.setMinimumHeight(90)
         self.big.clicked.connect(self._tap)
-        self.lbl_bpm = QLabel(f"当前：{current_bpm:g} BPM")
+        self.lbl_bpm = QLabel()
         self.lbl_bpm.setAlignment(Qt.AlignCenter)
         self.lbl_bpm.setStyleSheet("font-size:22px;")
         lay.addWidget(self.lbl)
@@ -102,6 +104,14 @@ class TapTempoDialog(QDialog):
         lay.addWidget(box)
         self.big.setFocus()
         translate_tree(self)
+        box.button(QDialogButtonBox.Cancel).setText(tr("取消"))
+        self._show_bpm(current_bpm)
+
+    def _show_bpm(self, bpm: float, taps: int = 0) -> None:
+        if taps:
+            self.lbl_bpm.setText(trf("当前：{bpm:.2f} BPM　（已点 {n} 次）", bpm=bpm, n=taps))
+        else:
+            self.lbl_bpm.setText(trf("当前：{bpm:g} BPM", bpm=bpm))
 
     def _tap(self) -> None:
         import time
@@ -116,7 +126,7 @@ class TapTempoDialog(QDialog):
         b = tap_tempo(self.times)
         if b:
             self.bpm = b
-            self.lbl_bpm.setText(f"当前：{b:.2f} BPM　（已点 {len(self.times)} 次）")
+            self._show_bpm(b, len(self.times))
 
     def keyPressEvent(self, ev) -> None:  # noqa: N802
         if ev.key() in (Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter):
@@ -146,6 +156,12 @@ class FillRangeDialog(QDialog):
         self.audio_dur = audio_dur
         self._locked = bool(locked)
         self._state = state
+        # 兼容旧调用/工具菜单：只要传入的区间正好等于当前框选，就自动锁定，
+        # 不要再要求用户点一次「用当前框选」。
+        if (not self._locked and state is not None
+                and getattr(state, "has_range", lambda: False)()
+                and abs(t0 - state.sel_t0) < 1.0 and abs(t1 - state.sel_t1) < 1.0):
+            self._locked = True
         self.setWindowTitle("区间批量填充音符")
         self.setMinimumWidth(470)
         self._loading = False
@@ -155,7 +171,7 @@ class FillRangeDialog(QDialog):
         self.lbl_range.setStyleSheet("color:#bfe2ff;font-weight:bold;")
         self.lbl_range.setWordWrap(True)
         lay.addWidget(self.lbl_range)
-        hint = QLabel("在时间轴上方**标尺**或波形/频谱区域横向拖一下即可框选区间（单击则定位播放头）")
+        hint = QLabel("在时间轴上方标尺或波形/频谱区域横向拖一下即可框选区间（单击则定位播放头）")
         hint.setStyleSheet("color:#8b949e;")
         hint.setWordWrap(True)
         lay.addWidget(hint)
@@ -182,6 +198,7 @@ class FillRangeDialog(QDialog):
         b_loop = QPushButton("用循环区间")
         b_notes = QPushButton("用全部音符")
         b_all = QPushButton("整首")
+        self.b_sel = b_sel
         for b in (b_sel, b_loop, b_notes, b_all):
             b.setFixedHeight(22)
         b_sel.clicked.connect(self._use_selection)
@@ -205,7 +222,7 @@ class FillRangeDialog(QDialog):
         self.sp_beats.setDecimals(4)
         self.sp_beats.setSingleStep(0.25)
         self.sp_beats.setValue(0.25)
-        self.sp_beats.setSuffix(" 拍")
+        self.sp_beats.setSuffix(tr(" 拍"))
         self.sp_beats.valueChanged.connect(self._update_hint)
         self.sp_ms = QDoubleSpinBox()
         self.sp_ms.setRange(5, 600000)
@@ -241,9 +258,9 @@ class FillRangeDialog(QDialog):
         tip = QLabel("提示：已存在的重复位置不会重复添加；上限 20000 个音符。")
         tip.setStyleSheet("color:#8b949e;")
         lay.addWidget(tip)
-
         box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         box.button(QDialogButtonBox.Ok).setText("填充")
+        box.button(QDialogButtonBox.Cancel).setText("取消")
         box.accepted.connect(self.accept)
         box.rejected.connect(self.reject)
         lay.addWidget(box)
@@ -254,13 +271,21 @@ class FillRangeDialog(QDialog):
             self.sp_beats.setValue(float(getattr(state, "fill_beats", 0.25)))
             self.sp_ms.setValue(float(getattr(state, "fill_ms", 125.0)))
             self.chk_alt.setChecked(bool(getattr(state, "fill_alt", False)))
-        self._sync_range()
         translate_tree(self)
+        self._sync_range()
 
     # ------------------------------------------------------------ 区间
     def _sync_range(self, *_) -> None:
         manual = self.chk_manual.isChecked()
         self.row_range.setVisible(manual)
+        if self._locked and not manual:
+            self.b_sel.setEnabled(False)
+            self.b_sel.setText(tr("已自动使用当前框选"))
+            self.b_sel.setToolTip(tr("右键打开时已经自动采用当前框选的区间，不需要再点"))
+        else:
+            self.b_sel.setEnabled(True)
+            self.b_sel.setText(tr("用当前框选"))
+            self.b_sel.setToolTip("")
         self.adjustSize()
         self._update_hint()
 
@@ -352,20 +377,23 @@ class FillRangeDialog(QDialog):
         self.cb_type2.setEnabled(self.chk_alt.isChecked())
         t0 = float(self.sp_start.value())
         t1 = float(self.sp_end.value())
-        src = "手动输入" if self.chk_manual.isChecked() else "时间轴框选"
-        self.lbl_range.setText(
-            f"区间（{src}）：{t0 / 1000.0:.3f}s → {t1 / 1000.0:.3f}s　"
-            f"共 {(t1 - t0) / 1000.0:.3f}s")
+        manual = self.chk_manual.isChecked()
+        src = tr("手动输入") if manual else tr("时间轴框选")
+        if self._locked and not manual:
+            src = tr("已自动使用当前框选")
+        self.lbl_range.setText(trf(
+            "区间（{src}）：{a:.3f}s → {b:.3f}s　共 {dur:.3f}s",
+            src=src, a=t0 / 1000.0, b=t1 / 1000.0, dur=(t1 - t0) / 1000.0))
         ts = self.times()
         if not ts:
-            self.lbl.setText("区间无内容：先在时间轴上框选一段，或点「手动输入区间」")
+            self.lbl.setText(tr("区间无内容：先在时间轴上框选一段，或点「手动输入区间」"))
             return
         gap = (ts[1] - ts[0]) if len(ts) > 1 else 0.0
         bpm = self.tm.bpm_at(ts[0])
-        self.lbl.setText(
-            f"将生成 {len(ts)} 个音符　首尾 {ts[0]:.0f} → {ts[-1]:.0f} ms　"
-            f"实际间隔 {gap:.1f} ms（{bpm:g} BPM）"
-        )
+        self.lbl.setText(trf(
+            "将生成 {n} 个音符　首尾 {a:.0f} → {b:.0f} ms　实际间隔 {gap:.1f} ms（{bpm:g} BPM）",
+            n=len(ts), a=ts[0], b=ts[-1], gap=gap, bpm=bpm
+        ))
 
     def remember(self) -> None:
         """把这次用的参数记回编辑器状态，下次开对话框沿用。"""
@@ -428,6 +456,7 @@ class AutoNotesDialog(QDialog):
         lay.addWidget(self.box)
         self._sync()
         translate_tree(self)
+        self.box.button(QDialogButtonBox.Cancel).setText(tr("取消"))
 
     def _sync(self, *_) -> None:
         video = self.cb_source.currentData() == "video"
@@ -436,7 +465,7 @@ class AutoNotesDialog(QDialog):
         self.sl_gap.setEnabled(not video)
 
     def _detect(self) -> None:
-        self.lbl.setText("检测中…")
+        self.lbl.setText(tr("检测中…"))
         self.detectRequested.emit(self.params())
 
     def params(self) -> dict:
@@ -451,5 +480,5 @@ class AutoNotesDialog(QDialog):
 
     def set_result(self, times: list[float], elapsed_s: float) -> None:
         self.times = list(times)
-        self.lbl.setText(f"检测到 {len(times)} 个点（用时 {elapsed_s:.1f}s）。"
-                         f"点「生成音符」写入谱面。")
+        self.lbl.setText(trf("检测到 {n} 个点（用时 {sec:.1f}s）。点「生成音符」写入谱面。",
+                             n=len(times), sec=elapsed_s))

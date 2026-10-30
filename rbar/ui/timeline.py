@@ -19,7 +19,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QMenu, QWidget
 
 from ..doc import Doc
-from ..i18n import tr
+from ..i18n import tr, trf
 from ..model import Note
 
 GUTTER = 108
@@ -840,7 +840,7 @@ class TimelineWidget(QWidget):
         p.drawRoundedRect(QRectF(xa + 3, BPM_H + RULER_H + 2, 62, 14), 3, 3)
         p.setPen(QColor("#8fe6f5"))
         p.drawText(QRectF(xa + 3, BPM_H + RULER_H + 2, 62, 14), Qt.AlignCenter,
-                   f"循环 {(st.loop_b - st.loop_a) / 1000.0:.2f}s")
+                   trf("循环 {dur:.2f}s", dur=(st.loop_b - st.loop_a) / 1000.0))
 
     # -- 时间标尺
     def _draw_ruler(self, p: QPainter, w: int) -> None:
@@ -975,7 +975,7 @@ class TimelineWidget(QWidget):
         self._range_anchor = t
         self._press_pos = pos
         self._mode = "range"
-        self.statusMessage.emit("框选区间：拖动确定范围（右键可填充/设为循环）")
+        self.statusMessage.emit(tr("框选区间：拖动确定范围（右键可填充/设为循环）"))
         self.update()
 
     def _start_paint(self, pos: QPoint, row: int) -> None:
@@ -1106,8 +1106,9 @@ class TimelineWidget(QWidget):
         if self._mode == "range":
             st.set_range(self._range_anchor, max(0.0, self.snap(self.x_to_ms(pos.x()))))
             self.statusMessage.emit(
-                f"区间 {fmt_time(st.sel_t0)} → {fmt_time(st.sel_t1)}"
-                f"（{(st.sel_t1 - st.sel_t0) / 1000.0:.3f}s）")
+                trf("区间 {a} → {b}（{dur:.3f}s）",
+                    a=fmt_time(st.sel_t0), b=fmt_time(st.sel_t1),
+                    dur=(st.sel_t1 - st.sel_t0) / 1000.0))
             self.update()
             return
         if self._mode == "paint":
@@ -1115,7 +1116,7 @@ class TimelineWidget(QWidget):
             for t in self._grid_times(self._paint_last, ms):
                 self._paint_add(t)
             self._paint_last = ms
-            self.statusMessage.emit(f"放置音符：已放 {self._paint_count} 个")
+            self.statusMessage.emit(trf("放置音符：已放 {n} 个", n=self._paint_count))
             self.doc.project.chart.sort()
             self.notesChanged.emit()
             self.update()
@@ -1127,7 +1128,7 @@ class TimelineWidget(QWidget):
                 ms = max(segs[idx - 1].time_ms + 1.0, self.snap(max(0.0, self.x_to_ms(pos.x()))))
                 segs[idx].time_ms = ms
                 self.doc.project.chart.set_segments(segs, self.doc.project.chart.offset_ms)
-                self.statusMessage.emit(f"BPM 段 {idx + 1} 起点 {fmt_time(ms)}")
+                self.statusMessage.emit(trf("BPM 段 {i} 起点 {t}", i=idx + 1, t=fmt_time(ms)))
                 self.notesChanged.emit()
                 self.update()
             return
@@ -1205,16 +1206,16 @@ class TimelineWidget(QWidget):
                 t = st.sel_t0
                 st.clear_range()
                 self.seekRequested.emit(max(0.0, t))
-                self.statusMessage.emit(f"定位到 {fmt_time(t)}")
+                self.statusMessage.emit(trf("定位到 {t}", t=fmt_time(t)))
             else:
-                self.statusMessage.emit(
-                    f"已框选区间 {fmt_time(st.sel_t0)} → {fmt_time(st.sel_t1)}"
-                    f"　右键可「在区间填充音符」")
+                self.statusMessage.emit(trf(
+                    "已框选区间 {a} → {b}　右键可「在区间填充音符」",
+                    a=fmt_time(st.sel_t0), b=fmt_time(st.sel_t1)))
             self.update()
             return
         if mode == "paint":
             self.doc.commit("放置音符")
-            self.statusMessage.emit(f"已放置 {self._paint_count} 个音符")
+            self.statusMessage.emit(trf("已放置 {n} 个音符", n=self._paint_count))
             self._paint_count = 0
             self.notesChanged.emit()
             self.update()
@@ -1257,9 +1258,9 @@ class TimelineWidget(QWidget):
         st.loop_on = True
         st.loop_armed = False
         st.clear_range()          # 区间已经变成循环区间，别再叠一层高亮
-        self.statusMessage.emit(
-            f"循环区间：{fmt_time(st.loop_a)} → {fmt_time(st.loop_b)}"
-            f"（播放菜单或循环勾选框可取消）")
+        self.statusMessage.emit(trf(
+            "循环区间：{a} → {b}（播放菜单或循环勾选框可取消）",
+            a=fmt_time(st.loop_a), b=fmt_time(st.loop_b)))
         self.loopChanged.emit()
         self.update()
 
@@ -1268,7 +1269,7 @@ class TimelineWidget(QWidget):
         st.loop_on = False
         st.loop_armed = False
         st.loop_a = st.loop_b = 0.0
-        self.statusMessage.emit("已清除循环区间")
+        self.statusMessage.emit(tr("已清除循环区间"))
         self.loopChanged.emit()
         self.update()
 
@@ -1327,7 +1328,9 @@ class TimelineWidget(QWidget):
                 menu.addAction(tr("粘贴到这里 (Ctrl+V)"), lambda: self._paste_at(pos))
                 menu.addSeparator()
             menu.addAction(tr("在此添加音符"), lambda: self._add_at(ms, row))
-            menu.addAction(tr("从这一点开始填充音符…"), lambda: self.fillRequested.emit(ms, -1.0))
+            if not st.has_range():
+                menu.addAction(tr("从这一点开始填充音符…"),
+                               lambda: self.fillRequested.emit(ms, -1.0))
             menu.addSeparator()
             menu.addAction(tr("全选"), self.selectAllRequested.emit)
             menu.addSeparator()

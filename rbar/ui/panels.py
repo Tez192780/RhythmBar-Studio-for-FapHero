@@ -31,6 +31,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..doc import Doc
+from ..exporter import estimate_size_mb
+from ..i18n import tr, trf
 from ..model import FORMATS, BpmSegment
 from ..theme import PRESETS, SHAPE_LABELS, SHAPES, NoteStyle, apply_preset
 
@@ -118,7 +120,7 @@ class ColorButton(QPushButton):
         self._apply()
 
     def _pick(self) -> None:
-        c = QColorDialog.getColor(QColor(self._color), self, "选择颜色")
+        c = QColorDialog.getColor(QColor(self._color), self, tr("选择颜色"))
         if c.isValid():
             self.setColor(c.name())
             self.colorChanged.emit(self._color)
@@ -595,7 +597,8 @@ class ChartPanel(QWidget):
         from PySide6.QtWidgets import QInputDialog
 
         cur = self.doc.project.chart.timemap.segments[-1].bpm
-        bpm, ok = QInputDialog.getDouble(self, "统一 BPM", "把整首曲子设为同一个 BPM：", cur, 1, 1200, 3)
+        bpm, ok = QInputDialog.getDouble(self, tr("统一 BPM"), tr("把整首曲子设为同一个 BPM："),
+                                         cur, 1, 1200, 3)
         if not ok:
             return
         before = self.doc.snapshot()
@@ -890,6 +893,7 @@ class ExportPanel(QWidget):
         self.cb_quality.currentIndexChanged.connect(self._apply)
         self.sp_fps = QSpinBox()
         self.sp_fps.setRange(1, 240)
+        self.sp_fps.setToolTip("60fps 的文件体积约为 30fps 的 2 倍；节奏条一般 30fps 就够")
         self.sp_fps.valueChanged.connect(self._apply)
         f.addRow("封装 / 编码", self.cb_fmt)
         f.addRow("质量", self.cb_quality)
@@ -1023,27 +1027,33 @@ class ExportPanel(QWidget):
         self._hint()
 
     def _hint(self) -> None:
-        f = self.doc.project.export.fmt
+        ex = self.doc.project.export
+        f = ex.fmt
         tips = {
-            "mov_prores": "ProRes 4444：PR / AE / 达芬奇 直接拖进去就有透明通道，文件较大。",
-            "mov_qtrle": "QuickTime 动画：剪映等软件兼容好，纯色图形体积小，推荐先用这个。",
-            "webm_vp9": "VP9 alpha：体积最小，Chrome / 部分剪辑软件支持；导入前先在剪辑软件里试一下。",
-            "webm_vp8": "VP8 alpha：兼容更老的解码器。",
-            "png_seq": "PNG 序列：绝对不会翻车，配合「导入序列」使用，体积大。",
-            "mp4_black": "黑底 MP4：没有透明通道，在剪辑软件里把混合模式设为「滤色 / 变亮」即可去掉黑底。",
+            "mov_prores": "ProRes 4444：PR / AE / 达芬奇 直接拖进去就有透明通道，体积很大。",
+            "mov_qtrle": "QuickTime 动画：剪映等软件兼容好，纯色图形体积中等，推荐先用这个。",
+            "webm_vp9": "VP9 alpha：体积最小（约为 qtrle 的 1/15），Chrome / 部分剪辑软件支持；导入前先试一下。",
+            "webm_vp8": "VP8 alpha：兼容老一点的解码器，体积比 VP9 稍大。",
+            "png_seq": "PNG 序列：绝对不会翻车，配合「导入序列」使用，体积很大。",
+            "mp4_black": "黑底 MP4：没有透明通道，在剪辑软件里把混合模式设为「滤色 / 变亮」即可去掉黑底，体积小。",
         }
-        self.lbl_hint.setText(tips.get(f, ""))
+        est = estimate_size_mb(f, ex.width, ex.height, int(ex.fps) * 60)
+        self.lbl_hint.setText(
+            tr(tips.get(f, ""))
+            + "\n"
+            + trf("粗略体积：约 {size:.0f} MB/分钟（{w}×{h}@{fps}fps；内容不同会有差异）",
+                  size=est, w=ex.width, h=ex.height, fps=ex.fps))
 
     def _browse(self) -> None:
         ex = self.doc.project.export
         if ex.fmt == "png_seq":
-            d = QFileDialog.getExistingDirectory(self, "选择 PNG 序列输出文件夹")
+            d = QFileDialog.getExistingDirectory(self, tr("选择 PNG 序列输出文件夹"))
             if d:
                 self.ed_out.setText(d)
         else:
             ext = {"mov_prores": "mov", "mov_qtrle": "mov", "webm_vp9": "webm",
                    "webm_vp8": "webm", "mp4_black": "mp4"}.get(ex.fmt, "mov")
-            path, _ = QFileDialog.getSaveFileName(self, "导出为", self.ed_out.text() or f"bar.{ext}",
+            path, _ = QFileDialog.getSaveFileName(self, tr("导出为"), self.ed_out.text() or f"bar.{ext}",
                                                   f"*.{ext}")
             if path:
                 self.ed_out.setText(path)
@@ -1164,7 +1174,7 @@ class SettingsPanel(QWidget):
         self._loading = False
 
     def _browse_ffmpeg(self) -> None:
-        p, _ = QFileDialog.getOpenFileName(self, "选择 ffmpeg.exe", "", "ffmpeg (ffmpeg.exe)")
+        p, _ = QFileDialog.getOpenFileName(self, tr("选择 ffmpeg.exe"), "", "ffmpeg (ffmpeg.exe)")
         if p:
             self.ed_ffmpeg.setText(p)
             self._apply()
