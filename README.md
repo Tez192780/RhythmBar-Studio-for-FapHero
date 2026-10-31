@@ -18,8 +18,6 @@
 4. 在时间轴上微调，右侧面板调外观
 5. **Ctrl+E** 导出透明视频，拖进剪辑软件，放在原视频**上层**
 
-没音频也能玩：**文件 → 载入示例工程**。
-
 ---
 
 ## 核心功能
@@ -209,6 +207,10 @@ Ctrl+U          检查更新
 python -m pip install -r requirements.txt
 python main.py
 ```
+
+首次启动会在**当前目录**生成 `rbar_settings.json`（已在 `.gitignore` 里，不会提交）：
+保存 ffmpeg 路径、语言、音量、试听速度、延迟校准、打点间隔、最近打开、检查更新开关等。
+可以直接用文本编辑器改，重启后生效；删掉它会用默认值重新生成。
 
 想打包成 exe：双击 `build_exe.bat`（需要联网装 pyinstaller，产物是 `dist\节奏条工作室\` 文件夹，不是单文件）。
 现在用 `package.spec` 排除了 QML/Quick/Pdf/WebEngine/软件 OpenGL 等无用 Qt 模块，实测文件夹

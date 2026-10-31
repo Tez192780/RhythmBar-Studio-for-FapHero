@@ -48,7 +48,6 @@ from ..audio import (
     find_ffprobe,
     peaks,
 )
-from ..demo import make_demo_project
 from ..doc import Doc
 from ..exporter import compute_range, estimate_size_mb, export_still, export_video
 from ..model import FORMATS, Note, Project
@@ -256,14 +255,12 @@ class MainWindow(QMainWindow):
         a_open = act("打开工程…", self.open_project, "Ctrl+O")
         a_audio = act("打开音频…", self.open_audio, "Ctrl+Shift+O")
         a_video = act("导入参考视频…（对照画面卡点）", lambda: self.import_video(), "Ctrl+Shift+V")
-        a_vaudio = act("用视频里的声音作为音频", self.use_video_audio)
-        a_demo = act("载入示例工程（没音频也能试）", self.load_demo)
         a_save = act("保存", self.save_project, "Ctrl+S")
         a_saveas = act("另存为…", self.save_project_as, "Ctrl+Shift+S")
         a_export = act("导出透明视频…", self.export_dialog, "Ctrl+E")
         a_still = act("导出当前帧 PNG…", self.export_still_dialog, "Ctrl+Shift+E")
         a_quit = act("退出", self.close, "Ctrl+Q")
-        for a in (a_new, a_open, a_audio, a_video, a_vaudio, a_demo):
+        for a in (a_new, a_open, a_audio, a_video):
             m_file.addAction(a)
         m_file.addSeparator()
         for a in (a_save, a_saveas):
@@ -806,7 +803,7 @@ class MainWindow(QMainWindow):
         """导入一段音频或视频；音频会解码进缓存，视频还会抽参考画面。
 
         force_audio=True：文件即使带视频扩展名，也只把它当音频导入
-        （“用视频里的声音作为音频”用这个，而不是再追加一份视频）。
+        （内部提取音轨用；文件菜单不再单独提供这个入口）。
         """
         if not path or not os.path.isfile(path):
             return
@@ -974,23 +971,6 @@ class MainWindow(QMainWindow):
         if any_audio and self.a_spec.isChecked():
             QTimer.singleShot(120, self.start_spectrogram)
         self._update_duration()
-
-    def use_video_audio(self) -> None:
-        """把某个视频片段里的声音单独提出来当音频（多加一段音频，不再复制视频）。"""
-        path = self._video_path()
-        if not path:
-            self._info("还没有参考视频", "先导入一个带声音的视频。")
-            return
-        from ..video import probe_audio_stream
-
-        if not probe_audio_stream(path, find_ffprobe(self.settings.ffmpeg)).get("has"):
-            self._info("这个视频没有声音", "视频里没有音轨，请另外载入音频文件。")
-            return
-        if any(c.path == path and c.kind == "video" and c.has_audio
-               for c in self.doc.project.clips):
-            self._info("视频声音已经在用了", "这个视频导入时已经带声音，不需要再单独提取一遍。")
-            return
-        self.import_media(path, mode="append", force_audio=True)
 
     # ================================================================ 时钟
     def _tick(self) -> None:
@@ -1542,14 +1522,6 @@ class MainWindow(QMainWindow):
         self.set_project(Project())
         self.statusBar().showMessage(i18n.tr("新工程"), 3000)
 
-    def load_demo(self) -> None:
-        """示例工程：没音频也能立刻看到/试用效果。"""
-        if not self._confirm_discard():
-            return
-        self.set_project(make_demo_project(bars=16))
-        self.statusBar().showMessage(
-            i18n.tr("已载入示例工程：可以直接改音符、换外观、试导出"), 8000)
-
     def set_project(self, project: Project, audio_path: str = "") -> None:
         self.pause()
         self.engine.clear()
@@ -1593,7 +1565,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(200, self._restore_next)
         elif len(project.chart) == 0:
             self.statusBar().showMessage(
-                i18n.tr("空工程：先导入音频/视频，或用「示例工程」练手"), 6000)
+                i18n.tr("空工程：先导入音频/视频"), 6000)
         self._refresh_recent()
         # 换工程后播放头必须回到开头，不能沿用旧工程的 _seek_ms
         self.seek(0.0)

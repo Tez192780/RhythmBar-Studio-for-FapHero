@@ -22,6 +22,9 @@ venv/
 # 工程/自动保存（属于个人数据，不进仓库）
 *.rbarproj
 *.rbarproj.autosave*
+# 当前目录的应用设置文件（运行时自动生成，可按需手改）
+rbar_settings.json
+rbar_settings.json.tmp
 
 # 编辑器 / 系统
 .vscode/

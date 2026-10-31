@@ -39,8 +39,6 @@ _TABLE: dict[str, tuple[str, str]] = {
     "打开工程…": ("プロジェクトを開く…", "Open Project…"),
     "打开音频…": ("音声を開く…", "Open Audio…"),
     "导入参考视频…（对照画面卡点）": ("動画を読み込む…（映像に合わせる）", "Import Video…"),
-    "用视频里的声音作为音频": ("動画の音声を音源にする", "Use Video Audio"),
-    "载入示例工程（没音频也能试）": ("サンプルを読み込む", "Load Demo Project"),
     "保存": ("保存", "Save"),
     "另存为…": ("名前を付けて保存…", "Save As…"),
     "导出透明视频…": ("透過動画を書き出す…", "Export Transparent Video…"),
@@ -273,12 +271,9 @@ _TABLE: dict[str, tuple[str, str]] = {
     "就绪：拖入音频 → 打点 → 导出透明视频": (
         "準備完了：音声をドロップ → 打点 → 透過動画を書き出し",
         "Ready: drop media → tap notes → export transparent video"),
-    "空工程：先导入音频/视频，或用「示例工程」练手": (
-        "空のプロジェクト：音声/動画を読み込むか、サンプルを使ってみてください",
-        "Empty project: import media, or load the demo project"),
-    "已载入示例工程：可以直接改音符、换外观、试导出": (
-        "サンプルを読み込みました：ノーツ編集・外観変更・書き出しを試せます",
-        "Demo project loaded: edit notes, tweak the look, try exporting"),
+    "空工程：先导入音频/视频": (
+        "空のプロジェクト：音声/動画を読み込んでください",
+        "Empty project: import media first"),
     "没有可用的音频输出设备": ("利用可能な音声出力デバイスがありません", "No audio output device"),
     "没有找到 ffmpeg": ("ffmpeg が見つかりません", "ffmpeg not found"),
     "找不到 ffmpeg.exe，请在「设置」标签里指定路径。": (
