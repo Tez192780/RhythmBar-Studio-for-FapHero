@@ -554,6 +554,7 @@ class MainWindow(QMainWindow):
             n for n in self.doc.project.chart.notes if n.clip_id not in ids]
         self.doc.project.chart.sort()
         self.doc.state.selected_clip_id = ""
+        self.doc.clear_selection()
         acs = self.doc.project.audio_clips
         vcs = self.doc.project.video_clips
         self.doc.project.audio_path = acs[0].path if acs else ""
