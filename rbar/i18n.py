@@ -54,7 +54,7 @@ _TABLE: dict[str, tuple[str, str]] = {
                               "Select Range (R, or Shift+drag)"),
     "全选": ("すべて選択", "Select All"),
     "复制 (Ctrl+C)": ("コピー (Ctrl+C)", "Copy (Ctrl+C)"),
-    "粘贴到播放头 (Ctrl+V)": ("再生位置に貼り付け (Ctrl+V)", "Paste at Playhead (Ctrl+V)"),
+    "粘贴到当前时间 (Ctrl+V)": ("再生位置に貼り付け (Ctrl+V)", "Paste at current time (Ctrl+V)"),
     "向后复制一份 (Ctrl+D)": ("後ろに複製 (Ctrl+D)", "Duplicate Forward (Ctrl+D)"),
     "量化到网格 (Ctrl+Q)": ("グリッドに量子化 (Ctrl+Q)", "Quantize (Ctrl+Q)"),
     "镜像选中区间 (Ctrl+M)": ("選択範囲を反転 (Ctrl+M)", "Mirror Selection (Ctrl+M)"),
@@ -77,7 +77,7 @@ _TABLE: dict[str, tuple[str, str]] = {
     "区间批量填充音符…": ("範囲にノーツを一括配置…", "Fill Range with Notes…"),
     "Tap 测速…": ("タップで BPM 測定…", "Tap Tempo…"),
     "自动检测 BPM…": ("BPM を自動検出…", "Detect BPM…"),
-    "在播放头插入 BPM 段…": ("再生位置に BPM 区間を挿入…", "Insert BPM Segment…"),
+    "在当前时间插入 BPM 段…": ("再生位置に BPM 区間を挿入…", "Insert BPM Segment…"),
     "快捷键与用法": ("ショートカットと使い方", "Shortcuts & Usage"),
     "关于": ("このアプリについて", "About"),
     # ------------------------------------------------------------ 工具栏/走带
@@ -120,14 +120,17 @@ _TABLE: dict[str, tuple[str, str]] = {
     "设置": ("設定", "Settings"),
     "BPM 变速": ("BPM 変化", "BPM Changes"),
     "起点 (ms)": ("開始 (ms)", "Start (ms)"),
-    "在播放头添加段": ("再生位置に追加", "Add at Playhead"),
+    "在当前时间切分音视频": ("現在の時間で映像/音声を分割", "Split video/audio at current time"),
+    "在当前时间把选中的视频/音频片段切成两段（链接片段一起切）": (
+        "現在の時間で選択中の映像/音声クリップを2つに分割します（リンク中のクリップも一緒に分割）。",
+        "Split the selected video/audio clip in two at the current time (linked clips split together)."),
     "删除段": ("区間を削除", "Delete Segment"),
     "整段统一 BPM": ("全体を同じ BPM に", "Unify BPM"),
     "Tap 测速（连点）": ("タップで測定（連打）", "Tap Tempo (tap)"),
     "自动检测 BPM": ("BPM を自動検出", "Detect BPM"),
     "对齐": ("タイミング合わせ", "Alignment"),
     "节拍偏移": ("拍のオフセット", "Beat Offset"),
-    "取播放头": ("再生位置を採用", "Use Playhead"),
+    "取当前时间": ("現在の時間を採用", "Use Current Time"),
     "网格": ("グリッド", "Grid"),
     "吸附": ("スナップ", "Snap"),
     "节奏条": ("リズムバー", "Rhythm Bar"),
@@ -315,7 +318,7 @@ _TABLE: dict[str, tuple[str, str]] = {
     "长条缩短一小节": ("長押しを1小節縮める", "Shorten hold by 1 bar"),
     # ------------------------------------------------- 粘贴 / 检查更新
     "粘贴到这里 (Ctrl+V)": ("ここに貼り付け (Ctrl+V)", "Paste here (Ctrl+V)"),
-    "粘贴到播放头": ("再生位置に貼り付け", "Paste at playhead"),
+    "粘贴到当前时间": ("再生位置に貼り付け", "Paste at current time"),
     "粘贴 (Ctrl+V，落在鼠标处)": ("貼り付け (Ctrl+V・マウス位置)", "Paste (Ctrl+V, at cursor)"),
     "检查更新…": ("アップデートを確認…", "Check for Updates…"),
     "正在检查更新…": ("アップデートを確認中…", "Checking for updates…"),
@@ -345,7 +348,7 @@ _TABLE: dict[str, tuple[str, str]] = {
     "片段重叠：换个位置（按住 Alt 可临时关吸附）": (
         "クリップが重なっています。位置を変えてください（Alt でスナップ一時解除）。",
         "Clips overlap; choose another position (hold Alt to disable snapping)."),
-    "在播放头切分片段": ("再生位置でクリップを分割", "Split clip at playhead"),
+    "在当前时间切分片段": ("再生位置でクリップを分割", "Split clip at current time"),
     "删除片段": ("クリップを削除", "Delete clip"),
     "空档不能添加音符": ("空白部分にはノーツを追加できません", "Cannot add notes in a gap"),
     "空档不能打点：先放到某段音频上": (
@@ -367,6 +370,7 @@ _TABLE: dict[str, tuple[str, str]] = {
     "片段：{name}（BPM/偏移只作用于这一段）": (
         "クリップ：{name}（BPM/オフセットはこのクリップだけに適用）",
         "Clip: {name} (BPM/offset applies to this clip only)"),
+    "片段：{name}（无音频）": ("クリップ：{name}（音声なし）", "Clip: {name} (no audio)"),
     "把这一段设为同一个 BPM：": (
         "このクリップ全体を同じ BPM に：", "Set this clip to one BPM:"),
     "先选片段": ("先にクリップを選択", "Select a clip first"),
@@ -374,23 +378,23 @@ _TABLE: dict[str, tuple[str, str]] = {
         "分割するクリップを映像/音声トラックで選択してください。",
         "Select the clip to split on the video or audio track."),
     "切分位置无效": ("分割位置が無効", "Invalid split position"),
-    "把播放头移到片段内部再切分。": (
+    "把当前时间移到片段内部再切分。": (
         "再生位置をクリップの内側に移動してから分割してください。",
-        "Move the playhead inside the clip before splitting."),
+        "Move the current time inside the clip before splitting."),
     "先在音频轨点击选中一段音频，再填充音符。": (
         "先に音声トラックのクリップを選択してからノーツを配置してください。",
         "Select an audio clip on the audio track before filling notes."),
     "区间不在片段内": ("範囲がクリップ内にありません", "Range is outside the clip"),
-    "框选/播放头要落在选中的音频片段里。": (
+    "框选/当前时间要落在选中的音频片段里。": (
         "選択範囲/再生位置を選択中の音声クリップ内に置いてください。",
-        "Keep the selection/playhead inside the selected audio clip."),
+        "Keep the selection/current time inside the selected audio clip."),
     "先在音频轨点击选中一段音频。": (
         "先に音声トラックのクリップを選択してください。",
         "Select an audio clip on the audio track first."),
     "位置不在片段内": ("位置がクリップ内にありません", "Position is outside the clip"),
-    "先把播放头放到选中的音频片段里。": (
+    "先把当前时间放到选中的音频片段里。": (
         "再生位置を選択中の音声クリップ内に移動してください。",
-        "Move the playhead inside the selected audio clip."),
+        "Move the current time inside the selected audio clip."),
     "这段音频还没有解码，等媒体加载完再试。": (
         "この音声はまだデコードされていません。読み込み完了後にもう一度試してください。",
         "This audio is not decoded yet; try again after loading finishes."),
@@ -398,12 +402,12 @@ _TABLE: dict[str, tuple[str, str]] = {
         "このクリップには分析できる音声がありません。",
         "This clip has no analyzable audio."),
     "估计 BPM：{bpm:.2f}（置信度 {conf:.0f}%）\n建议节拍偏移：{off:.1f} ms\n\n"
-    "「是」= 这一段统一用这个 BPM 并设好偏移\n「否」= 只在播放头插入这个 BPM 段": (
+    "「是」= 这一段统一用这个 BPM 并设好偏移\n「否」= 只在当前时间插入这个 BPM 段": (
         "推定 BPM：{bpm:.2f}（信頼度 {conf:.0f}%）\n推奨オフセット：{off:.1f} ms\n\n"
         "「はい」= このクリップ全体をこの BPM に\n「いいえ」= 再生位置に BPM 区間を追加",
         "Estimated BPM: {bpm:.2f} (confidence {conf:.0f}%)\n"
         "Suggested offset: {off:.1f} ms\n\n"
-        "“Yes” = use this BPM for the whole clip\n“No” = insert a segment at the playhead"),
+        "“Yes” = use this BPM for the whole clip\n“No” = insert a segment at the current time"),
     "检查 GitHub 上有没有新版本": ("GitHub に新しい版がないか確認", "Check GitHub for a new version"),
     "打开 Releases 页面": ("Releases ページを開く", "Open the Releases page"),
     "也可以直接打开 Releases 页面手动看看。": (
@@ -415,9 +419,9 @@ _TABLE: dict[str, tuple[str, str]] = {
     "右键打开时已经自动采用当前框选的区间，不需要再点": (
         "右クリックで開いた時点で現在の範囲を使用済みです。もう押す必要はありません。",
         "The current selection is already applied; no extra click needed."),
-    "在时间轴上方标尺或波形/频谱区域横向拖一下即可框选区间（单击则定位播放头）": (
+    "在时间轴上方标尺或波形/频谱区域横向拖一下即可框选区间（单击则定位当前时间）": (
         "タイムライン上部のルーラー、または波形/スペクトルを横にドラッグすると範囲を選択できます（クリックのみなら再生位置を移動）。",
-        "Drag across the ruler, waveform, or spectrogram to select a range (a click moves the playhead)."),
+        "Drag across the ruler, waveform, or spectrogram to select a range (a click moves the current time)."),
     "区间（{src}）：{a:.3f}s → {b:.3f}s　共 {dur:.3f}s": (
         "範囲（{src}）：{a:.3f}s → {b:.3f}s　計 {dur:.3f}s",
         "Range ({src}): {a:.3f}s → {b:.3f}s  ·  {dur:.3f}s total"),
@@ -445,7 +449,7 @@ _TABLE: dict[str, tuple[str, str]] = {
     "鼠标模式：框选区间（在任意位置横向拖动选出时间区间，右键可填充/设为循环）": (
         "マウス：範囲選択（横ドラッグで範囲を選択、右クリックで配置/リピート設定）",
         "Mouse: select range (drag horizontally; right-click to fill/set loop)"),
-    "鼠标模式：选择 / 拖拽（空白拖动=框选音符，标尺/波形拖动=拖播放头）": (
+    "鼠标模式：选择 / 拖拽（空白拖动=框选音符，标尺/波形拖动=移动当前时间）": (
         "マウス：選択 / ドラッグ（空白ドラッグ=ノーツ選択、ルーラー/波形ドラッグ=再生位置）",
         "Mouse: select/drag (empty drag = box select, ruler/waveform drag = scrub)"),
     # ------------------------------------------------- 导出体积提示 / 格式
@@ -504,8 +508,8 @@ _TABLE: dict[str, tuple[str, str]] = {
     "多种音符类型时，纵向铺开，避免叠在一条线上": (
         "複数のノーツ種類を縦に広げ、同じ線上に重ならないようにします。",
         "Spread multiple note types vertically so they don't overlap on one line."),
-    "把节拍偏移设为当前播放头位置": (
-        "拍オフセットを現在の再生位置に設定", "Set the beat offset to the playhead"),
+    "把节拍偏移设为当前时间位置": (
+        "拍オフセットを現在の再生位置に設定", "Set the beat offset to the current time"),
     "不管有没有音符，判定点上都常驻一枚菱形；命中后按音符颜色闪一下": (
         "ノーツがなくても判定点に菱形を常駐。ヒット時にノーツ色で光ります。",
         "Always show a diamond at the judge point; flash in the note color on hit."),
@@ -514,7 +518,7 @@ _TABLE: dict[str, tuple[str, str]] = {
     "导出整帧（比如 1920×1080）时，条带放在画面的哪个位置": (
         "全体（例：1920×1080）を書き出す時、バーを画面のどこに置くか",
         "Where to place the bar when exporting a full frame (e.g. 1920×1080)"),
-    "播放头和声音对不齐时在这校准：画面比声音慢就调小": (
+    "当前时间和声音对不齐时在这校准：画面比声音慢就调小": (
         "再生位置と音がずれる時の補正。映像が音より遅い場合は小さくします。",
         "A/V calibration: if the picture lags the sound, decrease this."),
     "打点时两次点击小于这个间隔就忽略": (
@@ -572,7 +576,7 @@ _TABLE: dict[str, tuple[str, str]] = {
     "视频": ("映像", "Video"),
     "音频": ("音声", "Audio"),
     "追加到末尾": ("末尾に追加", "Append to end"),
-    "插入到播放头": ("再生位置に挿入", "Insert at playhead"),
+    "插入到当前时间": ("再生位置に挿入", "Insert at current time"),
     "替换全部": ("すべて置き換え", "Replace all"),
     "正在导入": ("読み込み中", "Importing"),
     "上一段媒体还在解码，请稍等几秒再试。": (
@@ -607,12 +611,12 @@ _TABLE: dict[str, tuple[str, str]] = {
     "请先载入音频。": ("先に音声を読み込んでください。", "Load audio first."),
     # ------------------------------------------------- 其它动态模板
     "估计 BPM：{bpm:.2f}（置信度 {conf:.0f}%）\n建议节拍偏移：{off:.1f} ms\n\n"
-    "「是」= 整首统一用这个 BPM 并设好偏移\n「否」= 只在播放头插入这个 BPM 段": (
+    "「是」= 整首统一用这个 BPM 并设好偏移\n「否」= 只在当前时间插入这个 BPM 段": (
         "推定 BPM：{bpm:.2f}（信頼度 {conf:.0f}%）\n推奨オフセット：{off:.1f} ms\n\n"
         "「はい」= 曲全体をこの BPM に統一\n「いいえ」= 再生位置に BPM 区間を追加",
         "Estimated BPM: {bpm:.2f} (confidence {conf:.0f}%)\n"
         "Suggested offset: {off:.1f} ms\n\n"
-        "“Yes” = use this BPM for the whole song\n“No” = insert a segment at the playhead"),
+        "“Yes” = use this BPM for the whole song\n“No” = insert a segment at the current time"),
     "格式：{fmt}\n尺寸：{w}×{h} @ {fps}fps（{ss}× 超采样）\n"
     "帧数：{frames}（{dur}）\n预计体积：约 {size:.0f} MB（内容不同会有变化）\n"
     "预计用时：{time}\n\n开始导出？": (
@@ -623,10 +627,10 @@ _TABLE: dict[str, tuple[str, str]] = {
         "Frames: {frames} ({dur})\nEstimated size: ~{size:.0f} MB (varies with content)\n"
         "Estimated time: {time}\n\nStart export?"),
     "要导入的{kind}：{name}": ("読み込む{kind}：{name}", "Import {kind}: {name}"),
-    "当前时间轴上已有 {n} 段媒体（总长 {sec:.1f}s）。\n\n"
+    "时间轴上已有 {n} 段媒体（总长 {sec:.1f}s）。\n\n"
     "· 追加：接在最后一段之后（保持现有内容）\n"
     "· 替换：清空现有媒体，只留这一段\n"
-    "· 插入：放到播放头位置，其余片段往后顺延": (
+    "· 插入：放到当前时间位置，其余片段往后顺延": (
         "タイムラインには既に {n} 個のメディア（合計 {sec:.1f}s）があります。\n\n"
         "· 末尾に追加：最後の後ろに追加（既存を保持）\n"
         "· 置き換え：既存メディアを消してこの1つだけ\n"
@@ -634,14 +638,14 @@ _TABLE: dict[str, tuple[str, str]] = {
         "There are already {n} clips on the timeline ({sec:.1f}s total).\n\n"
         "· Append: after the last clip (keep existing)\n"
         "· Replace: clear existing clips\n"
-        "· Insert: at the playhead, shifting later clips"),
+        "· Insert: at the current time, shifting later clips"),
     "导入音视频": ("音声/映像を読み込む", "Import Media"),
     "出错": ("エラー", "Error"),
     "操作失败": ("操作に失敗しました", "Operation failed"),
     "操作失败（详情见控制台）": ("操作に失敗（詳細はコンソール）", "Operation failed (see console)"),
-    "已在播放头插入 {bpm:g} BPM 段": (
+    "已在当前时间插入 {bpm:g} BPM 段": (
         "再生位置に {bpm:g} BPM 区間を挿入しました",
-        "Inserted a {bpm:g} BPM segment at the playhead"),
+        "Inserted a {bpm:g} BPM segment at the current time"),
     "正在分析 BPM…": ("BPM を分析中…", "Analyzing BPM…"),
     "新工程": ("新規プロジェクト", "New project"),
     "打点太快（最小间隔 {ms:g} ms）": (
@@ -696,7 +700,7 @@ _TABLE: dict[str, tuple[str, str]] = {
     "V / B / R / Tab 切换「选择拖拽 / 放置音符 / 框选区间」三种鼠标模式\n"
     "放置模式：单击加点，按住拖动连续刷（一次撤销）\n"
     "选择模式：空白拖动框选音符，拖音符移动，拖右侧把手变长条\n"
-    "标尺或波形处直接拖动 = 拖播放头；Shift+拖动 或 R 模式 = 框选时间区间\n"
+    "标尺或波形处直接拖动 = 移动当前时间；Shift+拖动 或 R 模式 = 框选时间区间\n"
     "空格 播放/暂停      F 打点（播放中随时按）\n"
     "Ctrl+Z / Ctrl+Y 撤销/重做      Del 删除选中\n"
     "Ctrl+A 全选      Ctrl+C/V 复制粘贴      Ctrl+D 向后复制\n"

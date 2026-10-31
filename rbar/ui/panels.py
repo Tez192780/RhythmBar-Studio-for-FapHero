@@ -391,6 +391,7 @@ class ChartPanel(QWidget):
     seekRequested = Signal(float)
     tapRequested = Signal()
     autoBpmRequested = Signal()
+    clipSplitRequested = Signal()
 
     def __init__(self, doc: Doc, parent=None):
         super().__init__(parent)
@@ -417,10 +418,11 @@ class ChartPanel(QWidget):
         self.table.itemChanged.connect(self._on_cell)
         v.addWidget(self.table)
         btns = QHBoxLayout()
-        b_add = QPushButton("在播放头添加段")
+        b_add = QPushButton("在当前时间切分音视频")
+        b_add.setToolTip("在当前时间把选中的视频/音频片段切成两段（链接片段一起切）")
         b_del = QPushButton("删除段")
         b_reset = QPushButton("整段统一 BPM")
-        b_add.clicked.connect(self.add_segment)
+        b_add.clicked.connect(self.clipSplitRequested.emit)
         b_del.clicked.connect(self.del_segment)
         b_reset.clicked.connect(self.unify_bpm)
         self.b_add, self.b_del, self.b_reset = b_add, b_del, b_reset
@@ -509,9 +511,9 @@ class ChartPanel(QWidget):
         self.refresh()
 
     def _btn_offset_from_playhead(self) -> QWidget:
-        b = QPushButton("取播放头")
-        b.setFixedWidth(76)
-        b.setToolTip("把节拍偏移设为当前播放头位置")
+        b = QPushButton("取当前时间")
+        b.setFixedWidth(88)
+        b.setToolTip("把节拍偏移设为当前时间位置")
         b.clicked.connect(lambda: self.sp_offset.setValue(self._playhead_ms))
         return b
 
@@ -537,14 +539,19 @@ class ChartPanel(QWidget):
     def refresh(self) -> None:
         self._loading = True
         clip = self._clip()
+        selected = self.doc.project.clip_by_id(self.doc.state.selected_clip_id)
         if clip is None:
-            self.lbl_clip.setText(tr("未选中音频片段 —— 先在音频轨点击一段"))
+            if selected is None:
+                self.lbl_clip.setText(tr("未选中音频片段 —— 先在音频轨点击一段"))
+            else:
+                self.lbl_clip.setText(trf("片段：{name}（无音频）", name=selected.label))
             self.table.setRowCount(0)
             self.table.setEnabled(False)
             self.sp_offset.setValue(0.0)
             self.sp_offset.setEnabled(False)
-            for b in (self.b_add, self.b_del, self.b_reset, self.b_tap, self.b_auto):
+            for b in (self.b_del, self.b_reset, self.b_tap, self.b_auto):
                 b.setEnabled(False)
+            self.b_add.setEnabled(selected is not None)
         else:
             self.lbl_clip.setText(trf("片段：{name}（BPM/偏移只作用于这一段）",
                                       name=clip.label))
@@ -612,24 +619,6 @@ class ChartPanel(QWidget):
             segs[i].bpm = max(1.0, min(1200.0, val))
         clip.timemap.set_segments(segs, clip.timemap.offset_ms)
         self.doc.commit_external("修改 BPM", before)
-        self.refresh()
-        self.changed.emit()
-
-    def add_segment(self) -> None:
-        clip = self._clip()
-        if clip is None:
-            return
-        src = clip.timeline_to_source(self._playhead_ms)
-        if not clip.contains_time(self._playhead_ms):
-            return
-        src = clip.timemap.snap(src, self.doc.state.snap_divisor) if self.doc.state.snap_on else src
-        segs = list(clip.timemap.segments)
-        bpm = segs[-1].bpm if segs else 120.0
-        before = self.doc.snapshot(include_clips=True)
-        segs = [s for s in segs if abs(s.time_ms - src) > 1e-6]
-        segs.append(BpmSegment(src, bpm))
-        clip.timemap.set_segments(segs, clip.timemap.offset_ms)
-        self.doc.commit_external("添加 BPM 段", before)
         self.refresh()
         self.changed.emit()
 
@@ -1179,7 +1168,7 @@ class SettingsPanel(QWidget):
         b.clicked.connect(self._browse_ffmpeg)
         f.addRow("ffmpeg", _row(self.ed_ffmpeg, b))
         self.sl_latency = FloatSlider(-300, 300, 0, 1, 0, " ms")
-        self.sl_latency.setToolTip("播放头和声音对不齐时在这校准：画面比声音慢就调小")
+        self.sl_latency.setToolTip("当前时间和声音对不齐时在这校准：画面比声音慢就调小")
         self.sl_latency.valueChanged.connect(self._apply)
         f.addRow("音画延迟校准", self.sl_latency)
         self.sl_volume = FloatSlider(0.0, 1.0, 0.85, 0.01, 2)
@@ -1212,7 +1201,7 @@ class SettingsPanel(QWidget):
             "V / B / R / Tab 切换「选择拖拽 / 放置音符 / 框选区间」三种鼠标模式\n"
             "放置模式：单击加点，按住拖动连续刷（一次撤销）\n"
             "选择模式：空白拖动框选音符，拖音符移动，拖右侧把手变长条\n"
-            "标尺或波形处直接拖动 = 拖播放头；Shift+拖动 或 R 模式 = 框选时间区间\n"
+            "标尺或波形处直接拖动 = 移动当前时间；Shift+拖动 或 R 模式 = 框选时间区间\n"
             "空格 播放/暂停      F 打点（播放中随时按）\n"
             "Ctrl+Z / Ctrl+Y 撤销/重做      Del 删除选中\n"
             "Ctrl+A 全选      Ctrl+C/V 复制粘贴      Ctrl+D 向后复制\n"

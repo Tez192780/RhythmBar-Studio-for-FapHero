@@ -473,7 +473,7 @@ class AudioEngine(QObject):
         self.path = ""
         self.duration_ms = 0.0
         self._pcm = np.zeros((0, 2), dtype=np.int16)
-        # 换工程时位置必须回到 0：否则新工程会沿用旧工程的播放头
+        # 换工程时位置必须回到 0：否则新工程会沿用旧工程的当前时间
         self._seek_ms = 0.0
         self._pos_at = 0.0
         self._pos_clock = 0.0

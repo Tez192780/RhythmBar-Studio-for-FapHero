@@ -226,7 +226,7 @@ class TimelineWidget(QWidget):
             st.view_t0 = self._pos_ms - anchor
             self.update()
             return
-        # 只刷新播放头附近，省性能
+        # 只刷新当前时间附近，省性能
         for t in (prev_x, self._pos_ms):
             x = self.ms_to_x(t)
             if -20 <= x <= self.width() + 20:
@@ -1031,7 +1031,7 @@ class TimelineWidget(QWidget):
         p.drawLine(QPointF(0, y + RULER_H), QPointF(w, y + RULER_H))
         _ = span_ms
 
-    # -- 播放头
+    # -- 当前时间
     def _draw_playhead(self, p: QPainter, h: int) -> None:
         x = self.ms_to_x(self._pos_ms)
         if x < GUTTER - 6 or x > self.width() + 6:
@@ -1080,7 +1080,7 @@ class TimelineWidget(QWidget):
             p.setPen(QColor("#5fe0a0"))
             p.drawText(QRectF(8, self._audio_top(), GUTTER - 12, self._audio_h()),
                        Qt.AlignVCenter | Qt.AlignLeft, tr("音频轨"))
-        # BPM 区角标（当前片段/播放头所在音频片段）
+        # BPM 区角标（当前片段/当前时间所在音频片段）
         clip = self.doc.project.clip_by_id(self.doc.state.selected_clip_id)
         if clip is None or clip.kind != "audio":
             clip = self.doc.project.audio_clip_at(self._pos_ms)
@@ -1385,7 +1385,7 @@ class TimelineWidget(QWidget):
             self.seekRequested.emit(ms)
             return
         if pos.y() < BPM_H + RULER_H or pos.y() >= self._rows_bottom():
-            # 标尺 / 空档 / 波形 / 频谱：拖播放头或框选；点空档取消片段选择
+            # 标尺 / 空档 / 波形 / 频谱：移动当前时间或框选；点空档取消片段选择
             if ev.button() == Qt.LeftButton and pos.y() >= self._rows_bottom():
                 self._select_clip(None)
             if st.tool == "range" or (ev.modifiers() & Qt.ShiftModifier):
@@ -1555,7 +1555,7 @@ class TimelineWidget(QWidget):
         if mode == "range":
             st = self.doc.state
             if not st.has_range():
-                # 没拖出长度：当作单击（定位播放头 / 清除区间）
+                # 没拖出长度：当作单击（定位当前时间 / 清除区间）
                 t = st.sel_t0
                 st.clear_range()
                 self.seekRequested.emit(max(0.0, t))
@@ -1637,7 +1637,7 @@ class TimelineWidget(QWidget):
         clip_hit = self._clip_at_pos(pos)
         if clip_hit is not None:
             self._select_clip(clip_hit)
-            menu.addAction(tr("在播放头切分片段"), self.clipSplitRequested.emit)
+            menu.addAction(tr("在当前时间切分片段"), self.clipSplitRequested.emit)
             menu.addAction(tr("删除片段"), self.clipDeleteRequested.emit)
             menu.exec(self.mapToGlobal(pos))
             return

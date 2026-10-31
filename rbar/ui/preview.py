@@ -225,7 +225,7 @@ class SpectrumWidget(QWidget):
 
 
 class RefFrameWidget(QWidget):
-    """参考视频画面：跟随播放头显示；暂停后自动取一帧精确画面。"""
+    """参考视频画面：跟随当前时间显示；暂停后自动取一帧精确画面。"""
 
     seekRequested = Signal(float)
 
@@ -268,7 +268,7 @@ class RefFrameWidget(QWidget):
         self.update()
 
     def _active(self):
-        """播放头落在哪一段视频里 → (片段, 胶片, 源内时间ms)。"""
+        """当前时间落在哪一段视频里 → (片段, 胶片, 源内时间ms)。"""
         for item in self.clips:
             clip, fs = item if isinstance(item, tuple) else (item, item)
             if fs is None or not getattr(fs, "count", 0):

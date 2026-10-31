@@ -373,7 +373,7 @@ class MainWindow(QMainWindow):
         m_tool.addAction(act("区间批量填充音符…", lambda: self.fill_range()))
         m_tool.addAction(act("Tap 测速…", self.tap_tempo_dialog))
         m_tool.addAction(act("自动检测 BPM…", self.auto_bpm))
-        m_tool.addAction(act("在播放头插入 BPM 段…", lambda: self.panel_chart.add_segment()))
+        m_tool.addAction(act("在当前时间插入 BPM 段…", lambda: self.add_bpm_segment_at(self.position_ms)))
 
         m_help = self.menuBar().addMenu("帮助")
         m_help.addAction(act("快捷键与用法", self.show_help))
@@ -447,6 +447,7 @@ class MainWindow(QMainWindow):
         self.panel_chart.seekRequested.connect(self.seek)
         self.panel_chart.tapRequested.connect(self.tap_tempo_dialog)
         self.panel_chart.autoBpmRequested.connect(self.auto_bpm)
+        self.panel_chart.clipSplitRequested.connect(self.split_selected_clip)
         self.panel_style.changed.connect(self.on_visual_changed)
         self.panel_export.changed.connect(self._on_export_changed)
         self.panel_export.exportRequested.connect(self.export_dialog)
@@ -500,7 +501,7 @@ class MainWindow(QMainWindow):
             return
         cut = float(self.position_ms)
         if not c.contains_time(cut) or cut - c.offset_ms < 2.0 or c.end_ms() - cut < 2.0:
-            self._info("切分位置无效", "把播放头移到片段内部再切分。")
+            self._info("切分位置无效", "把当前时间移到片段内部再切分。")
             return
         import uuid
         group = self.doc.project.linked_clips(c)
@@ -727,7 +728,7 @@ class MainWindow(QMainWindow):
     @property
     def position_ms(self) -> float:
         if self.engine.playing:
-            # 用户手动校准量：正值 = 把播放头往声音前方挪
+            # 用户手动校准量：正值 = 把当前时间往声音前方挪
             return max(0.0, self.engine.position_ms() + self.engine.latency_ms)
         if self._virtual_active:
             return self._virtual_base + self._virtual.elapsed() * self.engine.rate
@@ -972,13 +973,13 @@ class MainWindow(QMainWindow):
         box.setText(i18n.trf("要导入的{kind}：{name}",
                              kind=kind, name=os.path.basename(path)))
         box.setInformativeText(i18n.trf(
-            "当前时间轴上已有 {n} 段媒体（总长 {sec:.1f}s）。\n\n"
+            "时间轴上已有 {n} 段媒体（总长 {sec:.1f}s）。\n\n"
             "· 追加：接在最后一段之后（保持现有内容）\n"
             "· 替换：清空现有媒体，只留这一段\n"
-            "· 插入：放到播放头位置，其余片段往后顺延",
+            "· 插入：放到当前时间位置，其余片段往后顺延",
             n=len(clips), sec=self._video_len() / 1000.0))
         b_append = box.addButton(i18n.tr("追加到末尾"), QMessageBox.AcceptRole)
-        b_insert = box.addButton(i18n.tr("插入到播放头"), QMessageBox.ActionRole)
+        b_insert = box.addButton(i18n.tr("插入到当前时间"), QMessageBox.ActionRole)
         b_replace = box.addButton(i18n.tr("替换全部"), QMessageBox.DestructiveRole)
         box.addButton(i18n.tr("取消"), QMessageBox.RejectRole)
         box.setDefaultButton(b_append)
@@ -1126,7 +1127,7 @@ class MainWindow(QMainWindow):
         self.settings.remember_dir(path)
         self.settings.save()
         self.refvideo.setVisible(self.a_ref.isChecked() and bool(self._films))
-        mode_txt = {"replace": "替换并载入", "append": "追加到末尾", "insert": "插入到播放头"}[mode]
+        mode_txt = {"replace": "替换并载入", "append": "追加到末尾", "insert": "插入到当前时间"}[mode]
         kind_txt = ("视频+分离音频" if is_video and samples is not None
                     else ("视频（无声）" if is_video else "音频"))
         self.statusBar().showMessage(
@@ -1360,7 +1361,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(i18n.trf("已复制 {n} 个音符", n=len(sel)), 2000)
 
     def paste_notes(self, at_ms: float | None = None, at_row: int | None = None) -> None:
-        """粘贴：默认落在鼠标处（没有鼠标位置就落播放头），可整块挪到别的音符行。
+        """粘贴：默认落在鼠标处（没有鼠标位置就落当前时间），可整块挪到别的音符行。
 
         at_ms  目标时间（该时间对应复制块最早那个音符）
         at_row 目标行号；给了就把整块音符挪到这一行（跨音符种类粘贴）
@@ -1500,7 +1501,7 @@ class MainWindow(QMainWindow):
                 i18n.trf("循环区间 {a} → {b}",
                          a=fmt_time(st.loop_a), b=fmt_time(st.loop_b)), 3000)
         elif st.loop_b > st.loop_a:
-            # 已有循环区间：单独按 L 把终点挪到播放头
+            # 已有循环区间：单独按 L 把终点挪到当前时间
             st.loop_b = max(pos, st.loop_a + 100.0)
             st.loop_on = True
             self.chk_loop.setChecked(True)
@@ -1538,7 +1539,7 @@ class MainWindow(QMainWindow):
         chart = self.doc.project.chart
         st = self.doc.state
         clip = self._target_audio_clip()
-        # 填充以框选/播放头所在的片段为准；选中的如果不是这一段，就让位
+        # 填充以框选/当前时间所在的片段为准；选中的如果不是这一段，就让位
         probe = st.sel_t0 if st.has_range() else self.position_ms
         at_probe = self.doc.project.audio_clip_at(probe)
         if at_probe is not None and (clip is None or not clip.contains_time(probe)):
@@ -1566,7 +1567,7 @@ class MainWindow(QMainWindow):
             t0 = max(t0, clip.offset_ms)
             t1 = min(t1, clip.end_ms())
         if t1 - t0 < 20.0:
-            self._info("区间不在片段内", "框选/播放头要落在选中的音频片段里。")
+            self._info("区间不在片段内", "框选/当前时间要落在选中的音频片段里。")
             return
         rows = [(k, self.doc.project.theme.style(k).name) for k in self.doc.project.theme.active_rows()]
         if not rows:
@@ -1634,7 +1635,7 @@ class MainWindow(QMainWindow):
             msg = {
                 "draw": "鼠标模式：放置音符（按住拖动可连续刷；右键仍可改类型/删除）",
                 "range": "鼠标模式：框选区间（在任意位置横向拖动选出时间区间，右键可填充/设为循环）",
-            }.get(st.tool, "鼠标模式：选择 / 拖拽（空白拖动=框选音符，标尺/波形拖动=拖播放头）")
+            }.get(st.tool, "鼠标模式：选择 / 拖拽（空白拖动=框选音符，标尺/波形拖动=移动当前时间）")
             self.statusBar().showMessage(i18n.tr(msg), 5000)
 
     def _restore_ctrl_tool(self) -> None:
@@ -1702,7 +1703,7 @@ class MainWindow(QMainWindow):
             self._info("先选片段", "先在音频轨点击选中一段音频。")
             return
         if not clip.contains_time(ms):
-            self._info("位置不在片段内", "先把播放头放到选中的音频片段里。")
+            self._info("位置不在片段内", "先把当前时间放到选中的音频片段里。")
             return
         segs = clip.timemap.segments
         bpm = segs[-1].bpm if segs else 120.0
@@ -1728,7 +1729,7 @@ class MainWindow(QMainWindow):
         src = clip.timeline_to_source(self.position_ms)
         cur = clip.timemap.bpm_at(src)
         if not clip.contains_time(self.position_ms):
-            self._info("位置不在片段内", "先把播放头放到选中的音频片段里。")
+            self._info("位置不在片段内", "先把当前时间放到选中的音频片段里。")
             return
         dlg = TapTempoDialog(self, cur)
         if dlg.exec() != QDialog.DialogCode.Accepted:
@@ -1783,7 +1784,7 @@ class MainWindow(QMainWindow):
             return
         msg = i18n.trf(
             "估计 BPM：{bpm:.2f}（置信度 {conf:.0f}%）\n建议节拍偏移：{off:.1f} ms\n\n"
-            "「是」= 这一段统一用这个 BPM 并设好偏移\n「否」= 只在播放头插入这个 BPM 段",
+            "「是」= 这一段统一用这个 BPM 并设好偏移\n「否」= 只在当前时间插入这个 BPM 段",
             bpm=bpm, conf=conf * 100, off=off)
         r = QMessageBox.question(self, i18n.tr("自动检测 BPM"), msg,
                                  QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel) if not self.silent \
@@ -1791,7 +1792,7 @@ class MainWindow(QMainWindow):
         if r == QMessageBox.Cancel:
             return
         if r == QMessageBox.No and not clip.contains_time(self.position_ms):
-            self._info("位置不在片段内", "先把播放头放到选中的音频片段里。")
+            self._info("位置不在片段内", "先把当前时间放到选中的音频片段里。")
             return
         before = self.doc.snapshot(include_clips=True)
         base_src = clip.src_start_ms
@@ -1864,7 +1865,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 i18n.tr("空工程：先导入音频/视频"), 6000)
         self._refresh_recent()
-        # 换工程后播放头必须回到开头，不能沿用旧工程的 _seek_ms
+        # 换工程后当前时间必须回到开头，不能沿用旧工程的 _seek_ms
         self.seek(0.0)
 
     def _restore_next(self) -> None:
@@ -2279,8 +2280,8 @@ class MainWindow(QMainWindow):
             "5. Ctrl+E 导出透明视频，拖进剪辑软件放在原视频上层\n\n"
             "【多段媒体（剪辑式）】\n"
             "  视频轨 / 音频轨各自拖动，片段之间可以留空；视频和分离音频默认链接。\n"
-            "  拖动片段自动吸附播放头和相邻片段首尾，按住 Alt 临时关吸附。\n"
-            "  右键片段：在播放头切分 / 删除；Ctrl+K 切分，Del 删除（没有音符选中时）。\n"
+            "  拖动片段自动吸附当前时间和相邻片段首尾，按住 Alt 临时关吸附。\n"
+            "  右键片段：在当前时间切分 / 删除；Ctrl+K 切分，Del 删除（没有音符选中时）。\n"
             "  片段之间空档没有网格、没有音符，也不能打点/添加音符。\n\n"
             "【判定点】\n"
             "  中间常驻一枚 45° 灰白菱形；音符打到它时按该音符颜色闪一下。\n"
@@ -2297,7 +2298,7 @@ class MainWindow(QMainWindow):
             "  放置音符：单击=加点；按住拖动=沿网格连续刷（一次撤销）\n"
             "  框选区间：在任意位置横向拖动=选出时间区间（Shift+拖动同效）\n"
             "  另外：按住 Ctrl 会临时切到放置模式，松开恢复原模式\n"
-            "  注意：标尺/波形处**直接拖动是拖播放头**，框选区间用 Shift 或 R 模式\n\n"
+            "  注意：标尺/波形处**直接拖动是移动当前时间**，框选区间用 Shift 或 R 模式\n\n"
             "【框选区间 → 填充（不用手打时间）】\n"
             "  框出区间后，右键「在这个区间填充音符…」或 工具菜单，\n"
             "  区间会自动采用当前框选，选好间隔和类型直接点「填充」即可。\n"

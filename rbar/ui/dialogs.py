@@ -170,7 +170,7 @@ class FillRangeDialog(QDialog):
         self.lbl_range.setStyleSheet("color:#bfe2ff;font-weight:bold;")
         self.lbl_range.setWordWrap(True)
         lay.addWidget(self.lbl_range)
-        hint = QLabel("在时间轴上方标尺或波形/频谱区域横向拖一下即可框选区间（单击则定位播放头）")
+        hint = QLabel("在时间轴上方标尺或波形/频谱区域横向拖一下即可框选区间（单击则定位当前时间）")
         hint.setStyleSheet("color:#8b949e;")
         hint.setWordWrap(True)
         lay.addWidget(hint)
