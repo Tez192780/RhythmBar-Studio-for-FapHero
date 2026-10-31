@@ -49,6 +49,10 @@ class AppSettings:
         geo = g("geometry")
         self.geometry = geo
 
+        # 外观 / 导出默认值：由 MainWindow 在启动、新建工程、改动外观/导出时写入。
+        self.theme: dict | None = None
+        self.export: dict | None = None
+
         self.config_path = os.path.join(os.getcwd(), CONFIG_NAME)
         self._load_file()
         if not os.path.isfile(self.config_path):
@@ -86,10 +90,14 @@ class AppSettings:
             self.recent = [str(x) for x in (d.get("recent") or []) if x][:12]
         if "show_safe" in d:
             self.show_safe = _as_bool(d.get("show_safe"), self.show_safe)
+        if isinstance(d.get("theme"), dict):
+            self.theme = d["theme"]
+        if isinstance(d.get("export"), dict):
+            self.export = d["export"]
 
     def _save_file(self) -> None:
         data = {
-            "_comment": "节奏条工作室设置；可以直接编辑，重启后生效。",
+            "_comment": "节奏条工作室设置（含外观与导出默认值）；可以直接编辑，重启后生效。",
             "ffmpeg": self.ffmpeg,
             "latency_ms": self.latency_ms,
             "volume": self.volume,
@@ -102,6 +110,10 @@ class AppSettings:
             "recent": self.recent[:12],
             "show_safe": bool(self.show_safe),
         }
+        if self.theme is not None:
+            data["theme"] = self.theme
+        if self.export is not None:
+            data["export"] = self.export
         tmp = self.config_path + ".tmp"
         try:
             with open(tmp, "w", encoding="utf-8") as f:

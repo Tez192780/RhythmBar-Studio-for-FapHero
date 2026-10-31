@@ -387,10 +387,10 @@ class ChartPanel(QWidget):
     """谱面设置：BPM 段、offset、吸附、流速、流向。"""
 
     changed = Signal()
+    renderChanged = Signal()
     seekRequested = Signal(float)
     tapRequested = Signal()
     autoBpmRequested = Signal()
-    autoNotesRequested = Signal()
 
     def __init__(self, doc: Doc, parent=None):
         super().__init__(parent)
@@ -428,13 +428,10 @@ class ChartPanel(QWidget):
         btns2 = QHBoxLayout()
         b_tap = QPushButton("Tap 测速（连点）")
         b_auto = QPushButton("自动检测 BPM")
-        b_notes = QPushButton("自动铺点（起音）")
         b_tap.clicked.connect(self.tapRequested.emit)
         b_auto.clicked.connect(self.autoBpmRequested.emit)
-        b_notes.clicked.connect(self.autoNotesRequested.emit)
         btns2.addWidget(b_tap)
         btns2.addWidget(b_auto)
-        btns2.addWidget(b_notes)
         v.addLayout(btns2)
         root.addWidget(box)
 
@@ -640,6 +637,7 @@ class ChartPanel(QWidget):
         self.doc.project.export.bg_color = self.btn_bg.color()
         self.doc.touch("节奏条参数")
         self.changed.emit()
+        self.renderChanged.emit()
 
 
 # -------------------------------------------------------------------- 外观

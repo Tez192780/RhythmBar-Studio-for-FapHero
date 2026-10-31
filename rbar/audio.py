@@ -335,7 +335,7 @@ def detect_onsets(
     sensitivity: float = 1.0,
     min_gap_ms: float = 60.0,
 ) -> list[float]:
-    """起音点（毫秒）列表，用于「自动铺点」。"""
+    """起音点（毫秒）列表；保留给自动 BPM / 开发自检使用。"""
     flux = onset_envelope(samples, sr, hop)
     if flux.size < 8:
         return []

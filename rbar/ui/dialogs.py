@@ -1,8 +1,8 @@
-"""对话框：BPM 段编辑、Tap 测速、区间填充、自动铺点。"""
+"""对话框：BPM 段编辑、Tap 测速、区间填充。"""
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
 )
 
 from ..i18n import tr, trf, translate_tree
-from .panels import FloatSlider
 
 
 def _pair(*widgets) -> QWidget:
@@ -403,82 +402,3 @@ class FillRangeDialog(QDialog):
         self._state.fill_beats = float(self.sp_beats.value())
         self._state.fill_ms = float(self.sp_ms.value())
         self._state.fill_alt = self.chk_alt.isChecked()
-
-
-class AutoNotesDialog(QDialog):
-    """自动铺点：按音频起音（或视频镜头切换）批量生成音符。"""
-
-    detectRequested = Signal(dict)
-
-    def __init__(self, parent, rows: list[tuple[str, str]], has_video: bool = False):
-        super().__init__(parent)
-        self.setWindowTitle("自动铺点")
-        self.setMinimumWidth(440)
-        self.times: list[float] = []
-        lay = QVBoxLayout(self)
-        f = QFormLayout()
-        self.cb_source = QComboBox()
-        self.cb_source.addItem("音频起音（听到的鼓点/音头）", "audio")
-        if has_video:
-            self.cb_source.addItem("视频镜头切换（画面剪切点）", "video")
-        self.cb_source.currentIndexChanged.connect(self._sync)
-        f.addRow("依据", self.cb_source)
-        self.sl_sens = FloatSlider(0.0, 1.0, 0.5, 0.01, 2)
-        self.sl_sens.setToolTip("音频：越大越灵敏，音符越多")
-        self.sl_gap = FloatSlider(30, 1000, 140, 1, 0, " ms")
-        self.sl_scene = FloatSlider(0.1, 0.9, 0.35, 0.01, 2)
-        self.sl_scene.setToolTip("视频：画面变化超过这个幅度算一次镜头切换")
-        self.cb_type = QComboBox()
-        for key, name in rows:
-            self.cb_type.addItem(name, key)
-        self.chk_quant = QCheckBox("吸附到当前网格")
-        self.chk_quant.setChecked(True)
-        f.addRow("灵敏度", self.sl_sens)
-        f.addRow("最小间隔", self.sl_gap)
-        f.addRow("镜头阈值", self.sl_scene)
-        f.addRow("音符类型", self.cb_type)
-        f.addRow("", self.chk_quant)
-        lay.addLayout(f)
-        self.lbl = QLabel("点「试检测」看看会生成多少音符")
-        self.lbl.setStyleSheet("color:#8b949e;")
-        self.lbl.setWordWrap(True)
-        lay.addWidget(self.lbl)
-        row = QHBoxLayout()
-        b_detect = QPushButton("试检测")
-        b_detect.clicked.connect(self._detect)
-        row.addWidget(b_detect)
-        row.addStretch(1)
-        lay.addLayout(row)
-        self.box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        self.box.button(QDialogButtonBox.Ok).setText("生成音符")
-        self.box.accepted.connect(self.accept)
-        self.box.rejected.connect(self.reject)
-        lay.addWidget(self.box)
-        self._sync()
-        translate_tree(self)
-        self.box.button(QDialogButtonBox.Cancel).setText(tr("取消"))
-
-    def _sync(self, *_) -> None:
-        video = self.cb_source.currentData() == "video"
-        self.sl_scene.setEnabled(video)
-        self.sl_sens.setEnabled(not video)
-        self.sl_gap.setEnabled(not video)
-
-    def _detect(self) -> None:
-        self.lbl.setText(tr("检测中…"))
-        self.detectRequested.emit(self.params())
-
-    def params(self) -> dict:
-        return {
-            "source": self.cb_source.currentData(),
-            "sensitivity": self.sl_sens.value(),
-            "min_gap_ms": self.sl_gap.value(),
-            "scene_threshold": self.sl_scene.value(),
-            "quantize": self.chk_quant.isChecked(),
-            "type": self.cb_type.currentData(),
-        }
-
-    def set_result(self, times: list[float], elapsed_s: float) -> None:
-        self.times = list(times)
-        self.lbl.setText(trf("检测到 {n} 个点（用时 {sec:.1f}s）。点「生成音符」写入谱面。",
-                             n=len(times), sec=elapsed_s))

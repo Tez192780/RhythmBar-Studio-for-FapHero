@@ -77,8 +77,6 @@ _TABLE: dict[str, tuple[str, str]] = {
     "区间批量填充音符…": ("範囲にノーツを一括配置…", "Fill Range with Notes…"),
     "Tap 测速…": ("タップで BPM 測定…", "Tap Tempo…"),
     "自动检测 BPM…": ("BPM を自動検出…", "Detect BPM…"),
-    "自动铺点（音频起音 / 视频镜头）…": ("自動配置（音の立ち上がり / 映像カット）…",
-                              "Auto Notes (Onsets / Scene Cuts)…"),
     "在播放头插入 BPM 段…": ("再生位置に BPM 区間を挿入…", "Insert BPM Segment…"),
     "快捷键与用法": ("ショートカットと使い方", "Shortcuts & Usage"),
     "关于": ("このアプリについて", "About"),
@@ -90,7 +88,6 @@ _TABLE: dict[str, tuple[str, str]] = {
     "循环": ("リピート", "Loop"),
     "打点(F)": ("打点(F)", "Tap (F)"),
     "自动BPM": ("自動BPM", "Auto BPM"),
-    "自动铺点": ("自動配置", "Auto Notes"),
     "导出透明视频": ("透過動画を書き出す", "Export Video"),
     "▶  播放": ("▶  再生", "▶  Play"),
     "⏸  暂停": ("⏸  一時停止", "⏸  Pause"),
@@ -128,7 +125,6 @@ _TABLE: dict[str, tuple[str, str]] = {
     "整段统一 BPM": ("全体を同じ BPM に", "Unify BPM"),
     "Tap 测速（连点）": ("タップで測定（連打）", "Tap Tempo (tap)"),
     "自动检测 BPM": ("BPM を自動検出", "Detect BPM"),
-    "自动铺点（起音）": ("自動配置（立ち上がり）", "Auto Notes"),
     "对齐": ("タイミング合わせ", "Alignment"),
     "节拍偏移": ("拍のオフセット", "Beat Offset"),
     "取播放头": ("再生位置を採用", "Use Playhead"),
@@ -255,16 +251,6 @@ _TABLE: dict[str, tuple[str, str]] = {
     "与下一种类型交替": ("次の種類と交互に", "Alternate with next type"),
     "起点吸附到当前网格": ("開始をグリッドにスナップ", "Snap start to grid"),
     "填充": ("配置", "Fill"),
-    "自动铺点": ("自動配置", "Auto Notes"),
-    "依据": ("基準", "Source"),
-    "灵敏度": ("感度", "Sensitivity"),
-    "最小间隔": ("最小間隔", "Min Interval"),
-    "镜头阈值": ("カット閾値", "Cut Threshold"),
-    "试检测": ("テスト検出", "Test Detect"),
-    "生成音符": ("ノーツを生成", "Generate Notes"),
-    "音频起音（听到的鼓点/音头）": ("音の立ち上がり（ドラム/アタック）", "Audio onsets (drums/attacks)"),
-    "视频镜头切换（画面剪切点）": ("映像カット（シーンチェンジ）", "Scene cuts (video)"),
-    "吸附到当前网格": ("グリッドにスナップ", "Snap to grid"),
     "取消": ("キャンセル", "Cancel"),
     "确定": ("OK", "OK"),
     # ------------------------------------------------------------ 动态文案
@@ -344,7 +330,7 @@ _TABLE: dict[str, tuple[str, str]] = {
         "Releases ページを直接開いて確認することもできます。",
         "You can also open the Releases page and check manually."),
     "好": ("OK", "OK"),
-    # --------------------------------------------- 区间填充 / 自动铺点 / 动态提示
+    # --------------------------------------------- 区间填充 / 动态提示
     "已自动使用当前框选": ("現在の範囲を自動使用", "Using current selection"),
     "右键打开时已经自动采用当前框选的区间，不需要再点": (
         "右クリックで開いた時点で現在の範囲を使用済みです。もう押す必要はありません。",
@@ -370,16 +356,6 @@ _TABLE: dict[str, tuple[str, str]] = {
     "当前：{bpm:.2f} BPM　（已点 {n} 次）": (
         "現在：{bpm:.2f} BPM　（{n} 回タップ）",
         "Current: {bpm:.2f} BPM  ({n} taps)"),
-    "检测中…": ("検出中…", "Detecting…"),
-    "点「试检测」看看会生成多少音符": (
-        "「テスト検出」で生成数を確認できます", "Click “Test Detect” to preview the count"),
-    "检测到 {n} 个点（用时 {sec:.1f}s）。点「生成音符」写入谱面。": (
-        "{n} 個検出（{sec:.1f}s）。「ノーツを生成」で譜面に書き込みます。",
-        "Found {n} points ({sec:.1f}s). Click “Generate Notes” to write them."),
-    "音频：越大越灵敏，音符越多": (
-        "音声：大きいほど敏感でノーツが増えます", "Audio: higher = more sensitive, more notes"),
-    "视频：画面变化超过这个幅度算一次镜头切换": (
-        "映像：この変化量を超えるとカットとみなします", "Video: changes above this count as a cut"),
     "按住 Ctrl：临时放置音符，松开恢复": (
         "Ctrl を押している間は一時的にノーツ配置、離すと元に戻ります",
         "Hold Ctrl to place notes temporarily; release to restore"),
@@ -494,7 +470,6 @@ _TABLE: dict[str, tuple[str, str]] = {
     "已复制 {n} 个音符": ("{n} 個のノーツをコピー", "Copied {n} notes"),
     "粘贴 {n} 个音符": ("{n} 個のノーツを貼り付け", "Pasted {n} notes"),
     "已填充 {n} 个音符": ("{n} 個のノーツを配置", "Filled {n} notes"),
-    "已生成 {n} 个音符": ("{n} 個のノーツを生成", "Generated {n} notes"),
     "循环区间 {a} → {b}": ("リピート範囲 {a} → {b}", "Loop range {a} → {b}"),
     "循环终点改为 {t}（要重设起点请先清除循环）": (
         "リピート終了を {t} に変更（開始を変えるには先に解除してください）",
@@ -550,14 +525,6 @@ _TABLE: dict[str, tuple[str, str]] = {
         "Select a range on the timeline, or use “Enter range manually”."),
     "没有音频": ("音声がありません", "No audio"),
     "请先载入音频。": ("先に音声を読み込んでください。", "Load audio first."),
-    "没有素材": ("素材がありません", "No media"),
-    "请先载入音频，或导入参考视频。": (
-        "音声を読み込むか、参照映像を読み込んでください。",
-        "Load audio or import a reference video."),
-    "先试检测": ("先にテスト検出", "Test Detect first"),
-    "请先点「试检测」生成结果。": (
-        "「テスト検出」を押して結果を生成してください。",
-        "Click “Test Detect” to produce results first."),
     # ------------------------------------------------- 其它动态模板
     "估计 BPM：{bpm:.2f}（置信度 {conf:.0f}%）\n建议节拍偏移：{off:.1f} ms\n\n"
     "「是」= 整首统一用这个 BPM 并设好偏移\n「否」= 只在播放头插入这个 BPM 段": (

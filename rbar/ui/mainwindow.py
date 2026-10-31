@@ -42,7 +42,6 @@ from .. import i18n
 from ..audio import (
     AudioEngine,
     decode_audio,
-    detect_onsets,
     estimate_bpm,
     estimate_offset,
     find_ffprobe,
@@ -50,12 +49,13 @@ from ..audio import (
 )
 from ..doc import Doc
 from ..exporter import compute_range, estimate_size_mb, export_still, export_video
-from ..model import FORMATS, Note, Project
+from ..model import FORMATS, ExportSettings, Note, Project
 from ..settings import AppSettings
 from ..tasks import Task
+from ..theme import Theme
 from ..timing import BpmSegment
 from ..updater import PAGE as RELEASES_PAGE
-from .dialogs import AutoNotesDialog, BpmSegmentDialog, FillRangeDialog, TapTempoDialog
+from .dialogs import BpmSegmentDialog, FillRangeDialog, TapTempoDialog
 from .panels import ChartPanel, ExportPanel, NoteTypePanel, SettingsPanel, StylePanel
 from .preview import PreviewWidget, RefFrameWidget, SpectrumWidget
 from .timeline import TimelineWidget, fmt_time
@@ -69,12 +69,22 @@ PEAK_BUCKETS = 30000
 FILMSTRIP_FPS = 12.0
 FILMSTRIP_MAX_FRAMES = 3000
 
+# 写进 rbar_settings.json 的导出偏好；输出路径、时间范围属于具体工程，不存。
+CONFIG_EXPORT_KEYS = (
+    "fmt", "fps", "width", "height", "supersample", "quality",
+    "padding_ms", "background", "bg_color", "bar_valign", "open_after",
+)
+
 
 class MainWindow(QMainWindow):
     def __init__(self, settings: AppSettings | None = None, project: Project | None = None):
         super().__init__()
         self.settings = settings or AppSettings()
-        self.doc = Doc(project or Project())
+        initial_project = project is None
+        if initial_project:
+            project = Project()
+            self._apply_config_defaults(project)
+        self.doc = Doc(project)
         self.engine = AudioEngine(self)
         self._clipboard: list[dict] = []
         self._clip_anchor = 0.0
@@ -98,11 +108,15 @@ class MainWindow(QMainWindow):
         self._last_ui_pos = -1.0
         self._media_busy = False
         self._spec_token = 0
-        self._auto_token = 0
         self._ctrl_tool_prev: str | None = None
         self._last_autosave = 0.0
         self._fps_t = time.perf_counter()
         self._last_status = 0.0
+        self._ui_ready = False
+        self._cfg_timer = QTimer(self)
+        self._cfg_timer.setSingleShot(True)
+        self._cfg_timer.setInterval(500)
+        self._cfg_timer.timeout.connect(self.settings.save)
         self.silent = False          # True = 不弹模态框（自动测试用）
 
         self.setWindowTitle(f"{APP_NAME} {__version__}")
@@ -125,6 +139,11 @@ class MainWindow(QMainWindow):
         self.refresh_all()
         i18n.translate_tree(self)          # 按当前语言刷新整套界面
         self.statusBar().showMessage(i18n.tr("就绪：拖入音频 → 打点 → 导出透明视频"), 8000)
+        self._ui_ready = True
+        if initial_project:
+            # 首次打开时把默认外观/导出写进当前目录的配置文件
+            self._capture_project_defaults()
+            self.settings.save()
         # 启动后延迟自动查一次更新（设置里可关；失败静默）
         QTimer.singleShot(2500, lambda: self.check_updates(auto=True))
         if self.doc.project.path:
@@ -353,7 +372,6 @@ class MainWindow(QMainWindow):
         m_tool.addAction(act("区间批量填充音符…", lambda: self.fill_range()))
         m_tool.addAction(act("Tap 测速…", self.tap_tempo_dialog))
         m_tool.addAction(act("自动检测 BPM…", self.auto_bpm))
-        m_tool.addAction(act("自动铺点（音频起音 / 视频镜头）…", self.auto_notes))
         m_tool.addAction(act("在播放头插入 BPM 段…", lambda: self.panel_chart.add_segment()))
 
         m_help = self.menuBar().addMenu("帮助")
@@ -398,7 +416,6 @@ class MainWindow(QMainWindow):
         tb.addAction(self.a_range_tool)
         tb.addSeparator()
         tb.addAction(act("自动BPM", self.auto_bpm))
-        tb.addAction(act("自动铺点", self.auto_notes))
         tb.addSeparator()
         tb.addAction(a_export)
 
@@ -425,12 +442,12 @@ class MainWindow(QMainWindow):
         self.panel_types.changed.connect(self.on_visual_changed)
         self.panel_types.orderChanged.connect(self.on_structure_changed)
         self.panel_chart.changed.connect(self.on_chart_changed)
+        self.panel_chart.renderChanged.connect(self._capture_export_defaults)
         self.panel_chart.seekRequested.connect(self.seek)
         self.panel_chart.tapRequested.connect(self.tap_tempo_dialog)
         self.panel_chart.autoBpmRequested.connect(self.auto_bpm)
-        self.panel_chart.autoNotesRequested.connect(self.auto_notes)
         self.panel_style.changed.connect(self.on_visual_changed)
-        self.panel_export.changed.connect(lambda: self.doc.touch("导出设置"))
+        self.panel_export.changed.connect(self._on_export_changed)
         self.panel_export.exportRequested.connect(self.export_dialog)
         self.panel_export.stillRequested.connect(self.export_still_dialog)
         self.panel_settings.changed.connect(self.settings_changed)
@@ -439,6 +456,56 @@ class MainWindow(QMainWindow):
         self.doc.dirtyChanged.connect(self._on_dirty)
         self.engine.stateChanged.connect(self._on_play_state)
         self.engine.finished.connect(lambda: self._on_play_state(False))
+
+    # ---------------------------------------------------- 配置文件里的工程默认值
+    def _apply_config_defaults(self, project: Project) -> None:
+        """把 rbar_settings.json 里的外观/导出偏好用到新工程上。"""
+        if isinstance(self.settings.theme, dict):
+            try:
+                project.theme = Theme.from_dict(self.settings.theme)
+            except Exception:  # noqa: BLE001
+                pass
+        if isinstance(self.settings.export, dict):
+            try:
+                ex = ExportSettings.from_dict(self.settings.export)
+                # 输出路径和时间范围是具体工程的，不拿来当默认值
+                ex.output = ""
+                ex.range_mode = "song"
+                ex.t_start = 0.0
+                ex.t_end = 0.0
+                project.export = ex
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _schedule_config_save(self) -> None:
+        timer = getattr(self, "_cfg_timer", None)
+        if timer is not None:
+            timer.start()
+
+    def _capture_theme_defaults(self) -> None:
+        if not getattr(self, "_ui_ready", False):
+            return
+        self.settings.theme = self.doc.project.theme.to_dict()
+        self._schedule_config_save()
+
+    def _capture_export_defaults(self) -> None:
+        if not getattr(self, "_ui_ready", False):
+            return
+        d = self.doc.project.export.to_dict()
+        self.settings.export = {k: d[k] for k in CONFIG_EXPORT_KEYS if k in d}
+        self._schedule_config_save()
+
+    def _capture_project_defaults(self) -> None:
+        if not getattr(self, "_ui_ready", False):
+            return
+        self.settings.theme = self.doc.project.theme.to_dict()
+        d = self.doc.project.export.to_dict()
+        self.settings.export = {k: d[k] for k in CONFIG_EXPORT_KEYS if k in d}
+        self._schedule_config_save()
+
+    def _on_export_changed(self) -> None:
+        self._capture_export_defaults()
+        self.doc.touch("导出设置")
 
     # ============================================================== 状态刷新
     def refresh_all(self) -> None:
@@ -495,10 +562,12 @@ class MainWindow(QMainWindow):
         self._update_counts()
 
     def on_visual_changed(self) -> None:
+        self._capture_theme_defaults()
         self.timeline.update()
         self.preview.update()
 
     def on_structure_changed(self) -> None:
+        self._capture_theme_defaults()
         self.panel_types.refresh()
         self.timeline.update()
         self.preview.update()
@@ -746,12 +815,6 @@ class MainWindow(QMainWindow):
             if dur > 0:
                 ends.append(float(c.offset_ms) + dur)
         return max(ends) if ends else 0.0
-
-    def _video_path(self) -> str:
-        for c in self.doc.project.clips:
-            if c.kind == "video":
-                return c.path
-        return ""
 
     def _update_duration(self) -> None:
         self.timeline.set_duration(max(self.engine.duration_ms, self._video_len()))
@@ -1437,89 +1500,13 @@ class MainWindow(QMainWindow):
         self.on_chart_changed()
         self.panel_chart.refresh()
 
-    def auto_notes(self) -> None:
-        if self.engine.samples is None and not self._video_path():
-            self._info("没有素材", "请先载入音频，或导入参考视频。")
-            return
-        rows = [(k, self.doc.project.theme.style(k).name) for k in self.doc.project.theme.active_rows()]
-        dlg = AutoNotesDialog(self, rows, has_video=bool(self._video_path()))
-        self._auto_token += 1
-        dlg.detectRequested.connect(self._auto_notes_detect)
-        while True:
-            if dlg.exec() != QDialog.DialogCode.Accepted:
-                return
-            if dlg.times:
-                break
-            self._info("先试检测", "请先点「试检测」生成结果。")
-        times = list(dlg.times)
-        type_key = dlg.params()["type"]
-        rows_list = self.doc.project.theme.active_rows()
-        lane = rows_list.index(type_key) if type_key in rows_list else 0
-        before = self.doc.snapshot()
-        chart = self.doc.project.chart
-        new_notes: list[Note] = []
-        seen: set[tuple[float, int]] = set()
-        for t in times:
-            key = (round(float(t), 3), lane)
-            if key in seen:
-                continue
-            seen.add(key)
-            if chart.find_at(t, lane, 0.5) is not None:
-                continue
-            new_notes.append(Note(t, type_key, lane))
-        chart.add_many(new_notes)
-        self.doc.commit_external("自动铺点", before)
-        self.on_notes_changed()
-        self.statusBar().showMessage(i18n.trf("已生成 {n} 个音符", n=len(new_notes)), 5000)
-
-    def _auto_notes_detect(self, params: dict) -> None:
-        sens = params["sensitivity"]
-        gap = params["min_gap_ms"]
-        t0 = time.perf_counter()
-        source = params.get("source", "audio")
-        thr = float(params.get("scene_threshold", 0.35))
-
-        def work():
-            if source == "video":
-                from ..video import scene_cuts
-
-                times: list[float] = []
-                for c in list(self.doc.project.clips):
-                    fs = self._films.get(c.path)
-                    if fs is None or not getattr(fs, "count", 0):
-                        continue
-                    for t in scene_cuts(fs, thr, min_gap_ms=gap):
-                        times.append(c.offset_ms + t - c.src_start_ms)
-                times = sorted(t for t in times if t >= 0)
-            else:
-                times = detect_onsets(self.engine.samples, self.engine.sr,
-                                      sensitivity=sens, min_gap_ms=gap)
-            if params.get("quantize") and self.doc.state.snap_on and times:
-                tm = self.doc.project.chart.timemap
-                d = self.doc.state.snap_divisor
-                times = sorted({round(tm.snap(t, d), 3) for t in times})
-            return times, time.perf_counter() - t0
-
-        self._auto_dlg = self.sender()
-        token = self._auto_token
-        dlg = self._auto_dlg
-        task = Task(work, parent=self)
-        task.done.connect(lambda res, d=dlg, t=token: self._auto_notes_done(res, d, t))
-        task.failed.connect(self._task_failed)
-        task.start()
-
-    def _auto_notes_done(self, res, dlg=None, token: int = -1) -> None:
-        if token != self._auto_token:
-            return                          # 旧对话框/旧检测的结果，不要写到新对话框
-        times, elapsed = res
-        if dlg is not None:
-            dlg.set_result(times, elapsed)
-
     # ================================================================ 工程
     def new_project(self) -> None:
         if not self._confirm_discard():
             return
-        self.set_project(Project())
+        p = Project()
+        self._apply_config_defaults(p)
+        self.set_project(p)
         self.statusBar().showMessage(i18n.tr("新工程"), 3000)
 
     def set_project(self, project: Project, audio_path: str = "") -> None:
@@ -1620,7 +1607,9 @@ class MainWindow(QMainWindow):
             return
         try:
             if path.lower().endswith(AUDIO_EXT):
-                self.set_project(Project(), audio_path=path)
+                p = Project()
+                self._apply_config_defaults(p)
+                self.set_project(p, audio_path=path)
             else:
                 proj = Project.load(path)
                 auto = path + ".autosave" + PROJECT_EXT
@@ -1913,7 +1902,7 @@ class MainWindow(QMainWindow):
             self, "用法与快捷键",
             "【最快上手流程】\n"
             "1. 把 mp3/wav 拖进窗口（或 Ctrl+Shift+O）\n"
-            "2. 空格播放，跟着音乐按 F 打点；或点「自动检测 BPM」+「自动铺点」\n"
+            "2. 空格播放，跟着音乐按 F 打点；或点「自动检测 BPM」\n"
             "3. 整段铺点也可以用「工具 → 区间批量填充音符」按固定间隔一次填满\n"
             "4. 有画面要卡：Ctrl+Shift+V 导入参考视频（视频自带声音的话会自动拿来当音频，\n"
             "   波形/频谱/自动 BPM 都基于它）；时间轴会多出胶片条和频谱图\n"
@@ -2095,6 +2084,7 @@ class MainWindow(QMainWindow):
             ev.ignore()
             return
         self.settings.geometry = self.saveGeometry()
+        self._cfg_timer.stop()
         self.settings.save()
         self.engine.shutdown()             # 音频线程必须在这里收掉
         ev.accept()
