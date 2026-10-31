@@ -29,7 +29,11 @@ ROW_H = 26
 WAVE_MIN = 46
 FILM_H = 58
 SPEC_MIN = 76
+VIDEO_H = 58
+AUDIO_WAVE_H = 52
+AUDIO_SPEC_H = 58
 NOTE_W = 9
+CLIP_SNAP_PX = 8.0
 
 BG = QColor("#191b1f")
 BG_ROW = QColor("#212429")
@@ -93,6 +97,11 @@ class TimelineWidget(QWidget):
     selectAllRequested = Signal()
     fillRequested = Signal(float, float)  # 区间填充：(t0, t1)；t1<=t0 表示“从 t0 开始”
     loopChanged = Signal()                # 循环区间被改（同步 UI 勾选状态）
+    clipSelected = Signal(str)
+    clipMoveStarted = Signal()
+    clipMoved = Signal()                  # 拖动结束，需要重建混音
+    clipSplitRequested = Signal()
+    clipDeleteRequested = Signal()
 
     def __init__(self, doc: Doc, parent=None):
         super().__init__(parent)
@@ -107,7 +116,14 @@ class TimelineWidget(QWidget):
         self._pos_ms = 0.0
         self._playing = False
         self._clips: list = []
+        self._video_items: list = []
+        self._audio_items: list = []
+        self._specs: dict = {}
         self._spec = None
+        self._spec_clip_id = ""
+        self._clip_drag = None
+        self._clip_hover = None
+        self._snap_guide = None
         self._xr: tuple[float, float] | None = None      # 增量补画时的像素范围
         self._hover: Note | None = None
         self._hover_bpm = -1
@@ -162,8 +178,10 @@ class TimelineWidget(QWidget):
         self.update()
 
     def set_clips(self, items) -> None:
-        """媒体片段条：items = [(MediaClip, Filmstrip|None), ...]。"""
+        """媒体片段条：items = [(MediaClip, Filmstrip|peaks|None), ...]。"""
         self._clips = list(items or [])
+        self._video_items = [(c, x) for c, x in self._clips if c.kind == "video"]
+        self._audio_items = [(c, x) for c, x in self._clips if c.kind == "audio"]
         self._bg = None
         self._update_min_height()
         self.update()
@@ -172,18 +190,31 @@ class TimelineWidget(QWidget):
         """兼容旧调用（单个片段）。"""
         self.set_clips([] if film is None else [(film, film)])
 
-    def set_spectrogram(self, spec) -> None:
-        """整首歌的频谱图（对音用）。"""
-        self._spec = spec
+    def set_spectrograms(self, specs: dict) -> None:
+        self._specs = dict(specs or {})
+        self._spec = next(iter(self._specs.values()), None)
         self._bg = None
         self._update_min_height()
         self.update()
 
+    def clear_spectrograms(self) -> None:
+        self.set_spectrograms({})
+
+    def set_spectrogram(self, spec) -> None:
+        """兼容旧调用：只有一段时也能用。"""
+        if spec is None:
+            self.clear_spectrograms()
+        else:
+            cid = self._audio_items[0][0].id if self._audio_items else ""
+            self.set_spectrograms({cid: spec})
+
     def _update_min_height(self) -> None:
-        extra = FILM_H if self._clips else 0
-        if self._spec is not None:
-            extra += SPEC_MIN
-        self.setMinimumHeight(BPM_H + RULER_H + ROW_H + WAVE_MIN + extra)
+        extra = (VIDEO_H if self._video_items and self.doc.state.show_video else 0)
+        if self._audio_items:
+            extra += AUDIO_WAVE_H
+        if self._specs:
+            extra += AUDIO_SPEC_H
+        self.setMinimumHeight(BPM_H + RULER_H + ROW_H + extra)
 
     def set_position(self, ms: float, playing: bool = False) -> None:
         st = self.doc.state
@@ -209,7 +240,7 @@ class TimelineWidget(QWidget):
         span = self._total_span()
         w = max(120.0, self.width() - GUTTER - 20.0)
         st.px_per_ms = max(0.0005, min(20.0, w / max(1.0, span)))
-        st.view_t0 = self.doc.project.chart.timemap.start_ms() - 400.0
+        st.view_t0 = -400.0
         self.update()
 
     def zoom_at(self, x: float, factor: float) -> None:
@@ -234,11 +265,12 @@ class TimelineWidget(QWidget):
             self.update()
 
     def _total_span(self) -> float:
-        tm = self.doc.project.chart.timemap
         lo, hi = self.doc.project.chart.bounds()
-        lo = min(lo, tm.start_ms())
-        hi = max(hi + 1500.0, self._dur_ms, hi + 1500.0)
-        return max(4000.0, hi - min(0.0, lo) + 500.0)
+        if self._clips:
+            lo = min([lo] + [c.offset_ms for c, _ in self._clips])
+        lo = min(0.0, lo)
+        hi = max(hi + 1500.0, self._dur_ms, self.doc.project.media_end_ms())
+        return max(4000.0, hi - lo + 500.0)
 
     # ------------------------------------------------------------ 坐标换算
     def ms_to_x(self, ms: float) -> float:
@@ -252,7 +284,12 @@ class TimelineWidget(QWidget):
 
     def _row_h(self) -> float:
         n = max(1, len(self.rows()))
-        avail = self.height() - BPM_H - RULER_H - WAVE_MIN
+        extra = (VIDEO_H if self._video_items and self.doc.state.show_video else 0)
+        if self._audio_items:
+            extra += AUDIO_WAVE_H
+        if self._spec_on():
+            extra += AUDIO_SPEC_H
+        avail = self.height() - BPM_H - RULER_H - extra
         return max(ROW_H, min(54.0, avail / n * 0.45))
 
     def _rows_top(self) -> float:
@@ -261,34 +298,41 @@ class TimelineWidget(QWidget):
     def _rows_bottom(self) -> float:
         return self._rows_top() + len(self.rows()) * self._row_h()
 
+    def _video_h(self) -> float:
+        return VIDEO_H if self._video_items and self.doc.state.show_video else 0.0
+
+    def _video_top(self) -> float:
+        return self._rows_bottom()
+
+    def _audio_top(self) -> float:
+        return self._video_top() + self._video_h()
+
+    def _audio_h(self) -> float:
+        return AUDIO_WAVE_H if self._audio_items else 0.0
+
     def _film_h(self) -> float:
-        if not self._clips or not self.doc.state.show_video:
-            return 0.0
-        return min(FILM_H, max(24.0, self.height() * 0.18))
+        return self._video_h() + self._audio_h()
 
     def _film_top(self) -> float:
         return self._rows_bottom()
 
     def _spec_on(self) -> bool:
-        return self._spec is not None and self.doc.state.show_spectrum
+        return bool(self._specs) and bool(self._audio_items) and self.doc.state.show_spectrum
 
     def _spec_top(self) -> float:
-        return self._rows_bottom() + self._film_h()
+        return self._audio_top() + self._audio_h()
 
     def _spec_h(self) -> float:
-        if not self._spec_on():
-            return 0.0
-        avail = max(0.0, self.height() - self._spec_top())
-        sh = avail * 0.58
-        if avail - sh < 34.0:
-            sh = max(0.0, avail - 34.0)
-        return max(0.0, sh)
+        return AUDIO_SPEC_H if self._spec_on() else 0.0
 
     def _wave_top(self) -> float:
-        return self._spec_top() + self._spec_h()
+        return self._audio_top()
 
     def _wave_h(self) -> float:
-        return max(WAVE_MIN, self.height() - self._wave_top())
+        return self._audio_h()
+
+    def _media_bottom(self) -> float:
+        return self._spec_top() + self._spec_h()
 
     def row_y(self, i: int) -> float:
         return self._rows_top() + i * self._row_h()
@@ -302,7 +346,13 @@ class TimelineWidget(QWidget):
         st = self.doc.state
         if not st.snap_on or st.snap_divisor <= 0:
             return float(ms)
-        return self.doc.project.chart.timemap.snap(ms, st.snap_divisor)
+        clip = self.doc.project.audio_clip_at(ms)
+        if clip is None:
+            if not self.doc.project.audio_clips:
+                return self.doc.project.chart.timemap.snap(ms, st.snap_divisor)
+            return float(ms)
+        src = clip.timeline_to_source(ms)
+        return clip.source_to_timeline(clip.timemap.snap(src, st.snap_divisor))
 
     # ------------------------------------------------------------ 绘制
     def paintEvent(self, ev) -> None:  # noqa: N802
@@ -321,6 +371,7 @@ class TimelineWidget(QWidget):
             p.drawPixmap(dx, 0, self._bg)
         # 动态层
         self._draw_notes(p, w)
+        self._draw_clip_snap_guide(p, h)
         self._draw_range(p, w, h)
         self._draw_rubber(p)
         self._draw_loop(p, w, h)
@@ -335,16 +386,21 @@ class TimelineWidget(QWidget):
         """背景内容指纹：只有它变了才需要重画缓存（比手动标记更省心）。"""
         st = self.doc.state
         th = self.doc.project.theme
-        tm = self.doc.project.chart.timemap
         rows = th.active_rows()
+        clip_sig = tuple(
+            (c.id, c.kind, round(c.offset_ms, 4), round(c.duration_ms, 4),
+             round(c.src_start_ms, 4), c.link_id,
+             tuple((round(s.time_ms, 4), round(s.bpm, 6)) for s in c.timemap.segments),
+             round(c.timemap.offset_ms, 4))
+            for c, _x in self._clips)
+        spec_sig = tuple(sorted((cid, getattr(sp, "frames", 0))
+                                for cid, sp in self._specs.items()))
         return (
             round(st.px_per_ms, 9), self.width(), self.height(), st.show_waveform,
             st.snap_divisor, st.current_lane, tuple(rows),
             tuple((th.style(k).name, th.style(k).color) for k in rows),
-            tuple((round(s.time_ms, 4), round(s.bpm, 6)) for s in tm.segments),
-            round(tm.offset_ms, 4), self._peaks is not None, round(self._dur_ms, 2),
-            len(self._clips), st.show_video,
-            id(self._spec) if self._spec is not None else 0, st.show_spectrum,
+            clip_sig, st.selected_clip_id, st.show_video, st.show_spectrum,
+            round(self._dur_ms, 2), spec_sig,
         )
 
     def _bg_buffer(self, pw: int, h: int) -> QPixmap:
@@ -406,12 +462,12 @@ class TimelineWidget(QWidget):
         st = self.doc.state
         x0, x1 = self._xrange(pw)
         self._draw_rows(p, pw, h)
-        if self._clips and st.show_video:
-            self._draw_media(p, pw)
         if self._spec_on():
             self._draw_spectrum(p, pw)
         if st.show_waveform:
             self._draw_wave(p, pw)
+        if self._clips:
+            self._draw_media(p, pw)
         self._draw_grid(p, pw, h)
         self._draw_bpm_lane(p, pw)
         self._draw_ruler(p, pw)
@@ -426,29 +482,37 @@ class TimelineWidget(QWidget):
             return (0.0, float(w))
         return self._xr
 
-    # -- 频谱图（对音主力）
+    # -- 每个音频片段自己的频谱图
     def _draw_spectrum(self, p: QPainter, w: int) -> None:
-        sp = self._spec
-        if sp is None:
+        if not self._specs:
             return
         y0 = self._spec_top()
         hh = self._spec_h()
         if hh <= 2:
             return
         p.fillRect(QRectF(0, y0, w, hh), QColor("#070910"))
-        img = sp.image()
         sx0, sx1 = self._xrange(w)
         sx0 = max(GUTTER, sx0)
         if sx1 - sx0 < 1:
             return
-        t0, t1 = self.x_to_ms(sx0), self.x_to_ms(sx1)
-        c0 = max(0.0, t0 / sp.frame_ms)
-        c1 = min(float(sp.frames), t1 / sp.frame_ms)
-        if c1 - c0 < 0.5:
-            return
-        p.setRenderHint(QPainter.SmoothPixmapTransform, False)   # 频谱不需要插值，快很多
-        p.drawImage(QRectF(sx0, y0, sx1 - sx0, hh), img,
-                    QRectF(c0, 0.0, c1 - c0, float(sp.bins)))
+        p.setRenderHint(QPainter.SmoothPixmapTransform, False)
+        for clip in self.doc.project.audio_clips:
+            sp = self._specs.get(clip.id)
+            if sp is None:
+                continue
+            left = max(sx0, self.ms_to_x(clip.offset_ms))
+            right = min(sx1, self.ms_to_x(clip.end_ms()))
+            if right - left < 1:
+                continue
+            src0 = clip.timeline_to_source(self.x_to_ms(left))
+            src1 = clip.timeline_to_source(self.x_to_ms(right))
+            c0 = max(0.0, (src0 - clip.src_start_ms) / max(1e-6, sp.frame_ms))
+            c1 = min(float(sp.frames),
+                     (src1 - clip.src_start_ms) / max(1e-6, sp.frame_ms))
+            if c1 - c0 < 0.5:
+                continue
+            p.drawImage(QRectF(left, y0, right - left, hh), sp.image(),
+                        QRectF(c0, 0.0, c1 - c0, float(sp.bins)))
         p.setRenderHint(QPainter.SmoothPixmapTransform, False)
 
     def _draw_spec_labels(self, p: QPainter, w: int) -> None:
@@ -471,74 +535,113 @@ class TimelineWidget(QWidget):
         p.setPen(QColor("#5c6672"))
         p.drawText(QRectF(6, y0 - 13, GUTTER - 12, 12), Qt.AlignRight | Qt.AlignTop, tr("Hz"))
 
-    # -- 媒体片段条（音频块 + 视频块内嵌胶片条）
+    # -- 媒体片段：视频轨 + 音频轨
+    def _clip_rect(self, clip):
+        dur = clip.duration_ms or 1000.0
+        x0 = self.ms_to_x(clip.offset_ms)
+        x1 = self.ms_to_x(clip.offset_ms + dur)
+        if clip.kind == "video":
+            y0, hh = self._video_top(), self._video_h()
+        else:
+            y0, hh = self._audio_top(), self._audio_h()
+        return QRectF(x0, y0 + 1.0, max(2.0, x1 - x0), max(2.0, hh - 2.0))
+
+    def _clip_at_pos(self, pos: QPoint):
+        y = pos.y()
+        if self._video_h() > 0 and self._video_top() <= y < self._video_top() + self._video_h():
+            for c, fs in self._video_items:
+                if self._clip_rect(c).adjusted(-2, 0, 2, 0).contains(QPointF(pos)):
+                    return c
+        if self._audio_h() > 0 and self._audio_top() <= y < self._audio_top() + self._audio_h():
+            for c, pk in self._audio_items:
+                if self._clip_rect(c).adjusted(-2, 0, 2, 0).contains(QPointF(pos)):
+                    return c
+        return None
+
     def _draw_media(self, p: QPainter, w: int) -> None:
-        clips = self._clips
-        if not clips:
+        if not self._clips:
             return
-        st = self.doc.state
-        y0 = self._film_top()
-        hh = self._film_h()
-        if hh <= 1:
-            return
-        p.fillRect(QRectF(0, y0, w, hh), QColor("#0d1013"))
-        mx0, mx1 = self._xrange(w)
-        vis0, vis1 = max(GUTTER, mx0), mx1
         p.setRenderHint(QPainter.SmoothPixmapTransform, True)
-        for clip, fs in clips:
-            dur = clip.duration_ms or 1000.0
-            cx0 = self.ms_to_x(clip.offset_ms)
-            cx1 = self.ms_to_x(clip.offset_ms + dur)
-            if cx1 < vis0 or cx0 > vis1:
-                continue
-            rect = QRectF(cx0, y0 + 1.0, max(2.0, cx1 - cx0), hh - 2.0)
-            # 视频片段：把胶片条贴进块里
-            if fs is not None and getattr(fs, "count", 0):
-                sw, sh = fs.thumb_w, fs.thumb_h
-                scale = (hh - 2.0) / max(1, sh)
-                a = max(0, int((self.x_to_ms(vis0) - clip.offset_ms + clip.src_start_ms) / max(1.0, fs.step_ms)) - 1)
-                b = min(fs.count - 1, int((self.x_to_ms(vis1) - clip.offset_ms + clip.src_start_ms) / max(1.0, fs.step_ms)) + 1)
-                for i in range(a, b + 1):
-                    img = fs.image(i)
-                    if img is None:
-                        continue
-                    x = self.ms_to_x(clip.offset_ms + fs.time_of(i) - clip.src_start_ms)
-                    xn = (self.ms_to_x(clip.offset_ms + fs.time_of(i + 1) - clip.src_start_ms)
-                          if i + 1 < fs.count else x + fs.step_ms * st.px_per_ms)
-                    cell = max(1.0, min(xn, cx1) - max(x, cx0))
-                    if cell <= 0.5:
-                        continue
-                    img_w = sw * scale
-                    src_x, src_w = 0.0, float(sw)
-                    if img_w > cell:
-                        src_w = sw * (cell / img_w)
-                        src_x = (sw - src_w) * 0.5
-                        img_w = cell
-                    p.drawImage(QRectF(max(x, cx0), y0 + 1.0, img_w, hh - 2.0), img,
-                                QRectF(src_x, 0.0, src_w, float(sh)))
-            # 外框 + 名字
-            tint = QColor(30, 90, 140, 120) if clip.kind == "video" else QColor(30, 110, 80, 120)
-            edge = QColor("#7ec8ff") if clip.kind == "video" else QColor("#5fe0a0")
-            if not clip.has_audio:
-                edge = QColor("#c0c0c0")
-            p.setBrush(QBrush(tint))
-            p.setPen(QPen(edge, 1.2))
-            p.drawRoundedRect(rect, 3, 3)
-            if rect.width() > 46:
-                p.setFont(self._small)
-                p.setPen(QColor(16, 22, 28, 210))
-                label_rect = QRectF(rect.left() + 4, rect.top() + 2, min(rect.width() - 8, 240), 14)
-                p.setPen(Qt.NoPen)
-                p.setBrush(QBrush(QColor(235, 244, 252, 215)))
-                p.drawRoundedRect(label_rect, 2, 2)
-                p.setPen(QColor("#16202a"))
-                icon = "🎬" if clip.kind == "video" else "♪"
-                p.drawText(label_rect.adjusted(4, 0, -3, 0), Qt.AlignVCenter | Qt.AlignLeft,
-                           f"{icon} {clip.label}")
+        # 视频轨
+        vh = self._video_h()
+        if vh > 0:
+            y0 = self._video_top()
+            p.fillRect(QRectF(0, y0, w, vh), QColor("#0d1013"))
+            for clip, fs in self._video_items:
+                rect = self._clip_rect(clip)
+                if rect.right() < GUTTER or rect.left() > w + 30:
+                    continue
+                if fs is not None and getattr(fs, "count", 0):
+                    sw, sh = fs.thumb_w, fs.thumb_h
+                    scale = (vh - 2.0) / max(1, sh)
+                    a = max(0, int((self.x_to_ms(max(GUTTER, rect.left()))
+                                    - clip.offset_ms + clip.src_start_ms)
+                                   / max(1.0, fs.step_ms)) - 1)
+                    b = min(fs.count - 1, int((self.x_to_ms(min(w, rect.right()))
+                                               - clip.offset_ms + clip.src_start_ms)
+                                              / max(1.0, fs.step_ms)) + 1)
+                    for i in range(a, b + 1):
+                        img = fs.image(i)
+                        if img is None:
+                            continue
+                        x = self.ms_to_x(clip.offset_ms + fs.time_of(i) - clip.src_start_ms)
+                        xn = (self.ms_to_x(clip.offset_ms + fs.time_of(i + 1) - clip.src_start_ms)
+                              if i + 1 < fs.count else x + fs.step_ms * self.doc.state.px_per_ms)
+                        cell = max(1.0, min(xn, rect.right()) - max(x, rect.left()))
+                        if cell <= 0.5:
+                            continue
+                        img_w = sw * scale
+                        src_x, src_w = 0.0, float(sw)
+                        if img_w > cell:
+                            src_w = sw * (cell / img_w)
+                            src_x = (sw - src_w) * 0.5
+                            img_w = cell
+                        p.drawImage(QRectF(max(x, rect.left()), rect.top(), img_w, rect.height()),
+                                    img, QRectF(src_x, 0.0, src_w, float(sh)))
+                self._draw_clip_frame(p, clip, rect, QColor("#1e5a8c"), QColor("#7ec8ff"))
+        # 音频轨
+        ah = self._audio_h()
+        if ah > 0:
+            y0 = self._audio_top()
+            if not self.doc.state.show_waveform:
+                p.fillRect(QRectF(0, y0, w, ah), QColor("#101619"))
+            for clip, _pk in self._audio_items:
+                rect = self._clip_rect(clip)
+                if rect.right() < GUTTER or rect.left() > w + 30:
+                    continue
+                self._draw_clip_frame(p, clip, rect, QColor("#1e6b52"), QColor("#5fe0a0"))
         p.setRenderHint(QPainter.SmoothPixmapTransform, False)
-        p.setPen(QPen(QColor("#39414b")))
-        p.drawLine(QPointF(0, y0), QPointF(w, y0))
-        p.drawLine(QPointF(0, y0 + hh), QPointF(w, y0 + hh))
+        if vh > 0:
+            p.setPen(QPen(QColor("#39414b")))
+            p.drawLine(QPointF(0, self._video_top()), QPointF(w, self._video_top()))
+            p.drawLine(QPointF(0, self._video_top() + vh), QPointF(w, self._video_top() + vh))
+        if ah > 0:
+            p.setPen(QPen(QColor("#39414b")))
+            p.drawLine(QPointF(0, self._audio_top()), QPointF(w, self._audio_top()))
+            p.drawLine(QPointF(0, self._audio_top() + ah), QPointF(w, self._audio_top() + ah))
+
+    def _draw_clip_frame(self, p: QPainter, clip, rect: QRectF, tint: QColor, edge: QColor) -> None:
+        selected = clip.id == self.doc.state.selected_clip_id
+        fill = QColor(tint)
+        fill.setAlpha(55)
+        p.setBrush(QBrush(fill))
+        p.setPen(QPen(QColor("#ffffff") if selected else edge, 2.0 if selected else 1.2))
+        p.drawRoundedRect(rect, 3, 3)
+        if rect.width() > 46:
+            self._small.setBold(selected)
+            p.setFont(self._small)
+            label_rect = QRectF(rect.left() + 4, rect.top() + 2,
+                                min(rect.width() - 8, 280), 14)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QBrush(QColor(235, 244, 252, 215)))
+            p.drawRoundedRect(label_rect, 2, 2)
+            p.setPen(QColor("#16202a"))
+            icon = "🎬" if clip.kind == "video" else "♪"
+            link = " 🔗" if clip.link_id else ""
+            p.drawText(label_rect.adjusted(4, 0, -3, 0), Qt.AlignVCenter | Qt.AlignLeft,
+                       f"{icon} {clip.label}{link}")
+            self._small.setBold(False)
+
 
     def fps(self) -> float:
         if not self._fps_times:
@@ -566,124 +669,181 @@ class TimelineWidget(QWidget):
         bottom = top + len(rows) * rh
         p.fillRect(QRectF(rx0, bottom, rw, max(0.0, h - bottom)), QColor("#15171b"))
 
-    # -- 波形（在音符行下面，占满剩余空间）
+    # -- 每个音频片段自己的波形
     def _draw_wave(self, p: QPainter, w: int) -> None:
         y0 = self._wave_top()
         hh = self._wave_h()
+        if hh <= 1:
+            return
         p.fillRect(QRectF(0, y0, w, hh), QColor("#151a20"))
         p.setPen(QPen(QColor("#262c34")))
         p.drawLine(QPointF(0, y0), QPointF(w, y0))
-        if self._peaks is None or self._dur_ms <= 0:
+        if not self._audio_items:
             if self._xr is None:
                 p.setPen(QColor("#4a5560"))
                 p.setFont(self._small)
                 p.drawText(QRectF(GUTTER + 12, y0, w - GUTTER - 20, hh), Qt.AlignCenter,
                            tr("未加载音频 —— 把 mp3 / wav / flac 拖进窗口，或点工具栏「打开音频」"))
             return
-        x0, x1 = self._xrange(w)
-        x0 = max(GUTTER, x0)
-        if x1 - x0 < 2:
-            return
-        cols = int(x1 - x0)
-        if cols <= 2:
-            return
-        n = len(self._peaks)
-        t0, t1 = self.x_to_ms(x0), self.x_to_ms(x1)
-        i0 = int(max(0.0, t0) / max(1.0, self._dur_ms) * n)
-        i1 = int(min(self._dur_ms, t1) / max(1.0, self._dur_ms) * n)
-        i0 = max(0, min(n - 1, i0))
-        i1 = max(i0 + 1, min(n, i1))
-        idx = np.linspace(i0, i1, cols + 1).astype(np.int64)
-        np.clip(idx, 0, n - 1, out=idx)
-        starts = np.maximum.accumulate(idx[:-1])
-        vals = np.maximum.reduceat(self._peaks, starts)[:cols].astype(np.float32)
-        mid = y0 + hh * 0.5
-        half = hh * 0.46
-        xs = np.arange(cols, dtype=np.float32) + x0
-        top_pts = [QPointF(float(xs[i]), float(mid - vals[i] * half)) for i in range(cols)]
-        bot_pts = [QPointF(float(xs[i]), float(mid + vals[i] * half)) for i in range(cols - 1, -1, -1)]
-        poly = QPolygonF(top_pts + bot_pts)
-        p.setPen(Qt.NoPen)
-        p.setBrush(QBrush(WAVE))
-        p.drawPolygon(poly)
-        p.setPen(QPen(WAVE_EDGE, 1))
-        p.drawPolyline(QPolygonF(top_pts))
-        p.drawLine(QPointF(x0, mid), QPointF(x1, mid))
+        for clip, pk in self._audio_items:
+            if pk is None or len(pk) == 0:
+                continue
+            rect = self._clip_rect(clip)
+            left = max(GUTTER, rect.left())
+            right = min(w, rect.right())
+            if right - left < 2:
+                continue
+            cols = max(2, int(right - left))
+            idx = np.linspace(0, len(pk) - 1, cols).astype(np.int64)
+            vals = np.clip(pk[idx], 0.0, 1.0)
+            mid = rect.top() + rect.height() * 0.5
+            half = max(1.0, rect.height() * 0.46)
+            xs = np.arange(cols, dtype=np.float32) + left
+            top = [QPointF(float(xs[i]), float(mid - vals[i] * half)) for i in range(cols)]
+            bottom = [QPointF(float(xs[i]), float(mid + vals[i] * half))
+                      for i in range(cols - 1, -1, -1)]
+            p.setPen(Qt.NoPen)
+            p.setBrush(QBrush(WAVE))
+            p.drawPolygon(QPolygonF(top + bottom))
+            p.setPen(QPen(WAVE_EDGE, 1))
+            p.drawPolyline(QPolygonF(top))
+            p.drawLine(QPointF(left, mid), QPointF(right, mid))
+        p.setPen(QPen(QColor("#39414b")))
+        p.drawLine(QPointF(0, y0 + hh), QPointF(w, y0 + hh))
 
-    # -- 节拍网格
+    # -- 节拍网格（每个音频片段自己的 BPM；空档不画）
     def _draw_grid(self, p: QPainter, w: int, h: int) -> None:
         st = self.doc.state
-        tm = self.doc.project.chart.timemap
         gx0, gx1 = self._xrange(w)
         t0, t1 = self.x_to_ms(max(GUTTER, gx0)), self.x_to_ms(gx1)
         top = BPM_H + RULER_H
-        respace = tm.ms(tm.beat(t0) + 1.0) - tm.ms(tm.beat(t0)) if st.px_per_ms else 0.0
-        beat_px = max(1e-6, respace * st.px_per_ms)
-        # 细分网格：只有格子够宽才画，否则糊成一片
         div = max(1.0, st.snap_divisor or 1.0)
-        if beat_px / div >= 7.0:
+        if not self.doc.project.audio_clips:
+            tm = self.doc.project.chart.timemap
             p.setPen(QPen(GRID_SUB, 1))
             for t in tm.grid_lines(t0, t1, div, limit=3000):
                 x = self.ms_to_x(t)
                 if x >= GUTTER:
                     p.drawLine(QPointF(x, top), QPointF(x, h))
-        for t in tm.grid_lines(t0, t1, 1.0, limit=1200):
-            x = self.ms_to_x(t)
-            if x < GUTTER:
+            p.setFont(self._ruler_font)
+            for t in tm.grid_lines(t0, t1, 1.0, limit=1200):
+                x = self.ms_to_x(t)
+                if x < GUTTER:
+                    continue
+                b = tm.beat(t)
+                is_bar = abs(b - round(b / 4.0) * 4.0) < 1e-6
+                p.setPen(QPen(GRID_BAR if is_bar else GRID, 1))
+                p.drawLine(QPointF(x, top), QPointF(x, h))
+                if is_bar:
+                    p.setPen(QColor("#5c6672"))
+                    p.drawText(QPointF(x + 3, top + 11),
+                               str(int(round(b / 4.0)) + 1))
+            return
+        for clip in self.doc.project.audio_clips:
+            left = max(t0, clip.offset_ms)
+            right = min(t1, clip.end_ms())
+            if right <= left:
                 continue
-            b = tm.beat(t)
-            is_bar = abs(b - round(b / 4.0) * 4.0) < 1e-6
-            p.setPen(QPen(GRID_BAR if is_bar else GRID, 1))
-            p.drawLine(QPointF(x, top), QPointF(x, h))
-        # 小节号（画在音符行顶部，被音符盖住也没关系）
-        p.setFont(self._ruler_font)
-        p.setPen(QColor("#5c6672"))
-        top_row = self._rows_top()
-        for t in tm.grid_lines(t0, t1, 1.0, limit=600):
-            b = tm.beat(t)
-            if abs(b - round(b / 4.0) * 4.0) > 1e-6:
-                continue
-            x = self.ms_to_x(t)
-            if x >= GUTTER - 2:
-                p.drawText(QPointF(x + 3, top_row + 11), str(int(round(b / 4.0)) + 1))
+            tm = clip.timemap
+            s0 = clip.timeline_to_source(left)
+            s1 = clip.timeline_to_source(right)
+            respace = (tm.ms(tm.beat(s0) + 1.0) - tm.ms(tm.beat(s0))
+                       if st.px_per_ms else 0.0)
+            beat_px = max(1e-6, respace * st.px_per_ms)
+            clip_l = self.ms_to_x(clip.offset_ms)
+            clip_r = self.ms_to_x(clip.end_ms())
+            if beat_px / div >= 7.0:
+                p.setPen(QPen(GRID_SUB, 1))
+                for src in tm.grid_lines(s0, s1, div, limit=3000):
+                    t = clip.source_to_timeline(src)
+                    x = self.ms_to_x(t)
+                    if x >= max(GUTTER, clip_l) and x <= clip_r:
+                        p.drawLine(QPointF(x, top), QPointF(x, h))
+            p.setFont(self._ruler_font)
+            for src in tm.grid_lines(s0, s1, 1.0, limit=1200):
+                t = clip.source_to_timeline(src)
+                x = self.ms_to_x(t)
+                if x < max(GUTTER, clip_l) or x > clip_r:
+                    continue
+                b = tm.beat(src)
+                is_bar = abs(b - round(b / 4.0) * 4.0) < 1e-6
+                p.setPen(QPen(GRID_BAR if is_bar else GRID, 1))
+                p.drawLine(QPointF(x, top), QPointF(x, h))
+                if is_bar:
+                    p.setPen(QColor("#5c6672"))
+                    p.drawText(QPointF(x + 3, top + 11),
+                               str(int(round(b / 4.0)) + 1))
 
-    # -- BPM 段
+    # -- BPM 段（按音频片段分段显示）
     def _draw_bpm_lane(self, p: QPainter, w: int) -> None:
         p.fillRect(QRectF(0, 0, w, BPM_H), BPM_BG)
-        tm = self.doc.project.chart.timemap
-        segs = tm.segments
         p.setFont(self._small)
-        for i, s in enumerate(segs):
-            x = self.ms_to_x(s.time_ms)
-            x_next = self.ms_to_x(segs[i + 1].time_ms) if i + 1 < len(segs) else w
-            if x_next < GUTTER or x > w:
+        if not self.doc.project.audio_clips:
+            tm = self.doc.project.chart.timemap
+            segs = tm.segments
+            for i, s in enumerate(segs):
+                x = self.ms_to_x(s.time_ms)
+                nx = (self.ms_to_x(segs[i + 1].time_ms)
+                      if i + 1 < len(segs) else w)
+                a, b = max(x, GUTTER), min(nx, w)
+                if b <= a:
+                    continue
+                p.fillRect(QRectF(a, 2, b - a, BPM_H - 4),
+                           QColor("#2f6f4f") if i % 2 == 0 else QColor("#2b5c74"))
+                p.setPen(QColor("#dfe7ee"))
+                if b - a > 46:
+                    p.drawText(QRectF(a + 5, 0, b - a - 8, BPM_H),
+                               Qt.AlignVCenter | Qt.AlignLeft, f"{s.bpm:g}")
+            return
+        for clip in self.doc.project.audio_clips:
+            left = max(self.ms_to_x(clip.offset_ms), GUTTER)
+            right = min(self.ms_to_x(clip.end_ms()), w)
+            if right <= left:
                 continue
-            left = max(x, GUTTER)
-            right = min(x_next, w)
-            col = QColor("#2f6f4f") if i % 2 == 0 else QColor("#2b5c74")
-            p.fillRect(QRectF(left, 2, max(0.0, right - left), BPM_H - 4), col)
-            p.setPen(QPen(QColor("#0e1114"), 1))
-            p.drawLine(QPointF(left, 0), QPointF(left, BPM_H))
-            p.setPen(QColor("#dfe7ee"))
-            if right - left > 46:
-                p.drawText(QRectF(left + 5, 0, right - left - 8, BPM_H), Qt.AlignVCenter | Qt.AlignLeft,
-                           f"{s.bpm:g}")
-        # 第一个段起点 = 拍 0（标尺里画个黄三角，BPM 条里画虚线）
-        x0 = self.ms_to_x(tm.start_ms())
-        if GUTTER <= x0 <= w:
-            p.setPen(QPen(QColor("#ffd166"), 1, Qt.DashLine))
-            p.drawLine(QPointF(x0, 0), QPointF(x0, BPM_H))
-            tri = QPainterPath()
-            tri.moveTo(x0 - 5, BPM_H + 3)
-            tri.lineTo(x0 + 5, BPM_H + 3)
-            tri.lineTo(x0, BPM_H + 11)
-            tri.closeSubpath()
-            p.setPen(Qt.NoPen)
-            p.setBrush(QBrush(QColor("#ffd166")))
-            p.drawPath(tri)
-            p.setBrush(Qt.NoBrush)
+            tm = clip.timemap
+            segs = tm.segments
+            for i, s in enumerate(segs):
+                x = self.ms_to_x(clip.source_to_timeline(s.time_ms))
+                nx_src = (segs[i + 1].time_ms if i + 1 < len(segs)
+                          else clip.source_end_ms())
+                nx = self.ms_to_x(clip.source_to_timeline(nx_src))
+                a = max(left, x)
+                b = min(right, nx)
+                if b <= a:
+                    continue
+                col = QColor("#2f6f4f") if i % 2 == 0 else QColor("#2b5c74")
+                p.fillRect(QRectF(a, 2, max(0.0, b - a), BPM_H - 4), col)
+                p.setPen(QPen(QColor("#0e1114"), 1))
+                p.drawLine(QPointF(a, 0), QPointF(a, BPM_H))
+                p.setPen(QColor("#dfe7ee"))
+                if b - a > 46:
+                    p.drawText(QRectF(a + 5, 0, b - a - 8, BPM_H),
+                               Qt.AlignVCenter | Qt.AlignLeft, f"{s.bpm:g}")
+            # 拍 0 标记
+            x0 = self.ms_to_x(clip.source_to_timeline(tm.offset_ms))
+            if left <= x0 <= right:
+                p.setPen(QPen(QColor("#ffd166"), 1, Qt.DashLine))
+                p.drawLine(QPointF(x0, 0), QPointF(x0, BPM_H))
+                p.setPen(Qt.NoPen)
+                p.setBrush(QBrush(QColor("#ffd166")))
+                p.drawEllipse(QPointF(x0, BPM_H - 3), 2.5, 2.5)
+                p.setBrush(Qt.NoBrush)
 
     # -- 音符
+    def _note_owner(self, n: Note):
+        c = self.doc.project.clip_by_id(n.clip_id) if n.clip_id else None
+        if c is None:
+            c = self.doc.project.audio_clip_at(n.t)
+        if c is None or c.kind != "audio":
+            return None
+        return c
+
+    def _note_visible(self, n: Note) -> bool:
+        if not self.doc.project.audio_clips:
+            return True                 # 无音频的示例/旧工程：保留旧行为
+        c = self._note_owner(n)
+        return c is not None and c.contains_time(n.t, 0.8)
+
     def _note_x_range(self, n: Note) -> tuple[float, float]:
         x = self.ms_to_x(n.t)
         x2 = self.ms_to_x(n.end)
@@ -713,7 +873,7 @@ class TimelineWidget(QWidget):
         # 只取真正落在屏幕上的音符（时间->像素单调，直接换算窗口）
         t_lo = t0v + (x_lo - GUTTER) / ppm - chart.max_dur - 40.0
         t_hi = t0v + (x_hi - GUTTER) / ppm + 40.0
-        vis = chart.in_range(t_lo, t_hi)
+        vis = [n for n in chart.in_range(t_lo, t_hi) if self._note_visible(n)]
         if not vis:
             return
         styles = self.doc.project.theme.styles
@@ -907,10 +1067,30 @@ class TimelineWidget(QWidget):
             p.setPen(QColor("#e6edf3") if active else QColor("#9aa4af"))
             p.drawText(QRectF(26, y, GUTTER - 30, rh), Qt.AlignVCenter | Qt.AlignLeft,
                        f"{i + 1} {st.name}")
-        # BPM 区角标
+        # 轨道标签
+        if self._video_h() > 0:
+            p.fillRect(QRectF(0, self._video_top(), GUTTER, self._video_h()),
+                       QColor("#131a21"))
+            p.setPen(QColor("#7ec8ff"))
+            p.drawText(QRectF(8, self._video_top(), GUTTER - 12, self._video_h()),
+                       Qt.AlignVCenter | Qt.AlignLeft, tr("视频轨"))
+        if self._audio_h() > 0:
+            p.fillRect(QRectF(0, self._audio_top(), GUTTER, self._audio_h()),
+                       QColor("#121c19"))
+            p.setPen(QColor("#5fe0a0"))
+            p.drawText(QRectF(8, self._audio_top(), GUTTER - 12, self._audio_h()),
+                       Qt.AlignVCenter | Qt.AlignLeft, tr("音频轨"))
+        # BPM 区角标（当前片段/播放头所在音频片段）
+        clip = self.doc.project.clip_by_id(self.doc.state.selected_clip_id)
+        if clip is None or clip.kind != "audio":
+            clip = self.doc.project.audio_clip_at(self._pos_ms)
+        bpm_txt = "—"
+        if clip is not None:
+            src = clip.timeline_to_source(self._pos_ms)
+            bpm_txt = f"{clip.timemap.bpm_at(src):g}"
         p.setPen(QColor("#8b949e"))
         p.drawText(QRectF(8, 0, GUTTER - 12, BPM_H), Qt.AlignVCenter | Qt.AlignLeft,
-                   f"BPM  {self.doc.project.chart.timemap.bpm_at(self._pos_ms):g}")
+                   f"BPM  {bpm_txt}")
 
     # ------------------------------------------------------------ 命中测试
     def _note_at(self, pos: QPoint) -> Note | None:
@@ -925,6 +1105,8 @@ class TimelineWidget(QWidget):
         tol = max(60.0, 10.0 / max(1e-6, self.doc.state.px_per_ms))
         best = None
         for n in self.doc.project.chart.in_range(ms - tol - 2000.0, ms + tol):
+            if not self._note_visible(n):
+                continue
             if n.type != key and n.lane != row:
                 continue
             x, x2 = self._note_x_range(n)
@@ -955,14 +1137,19 @@ class TimelineWidget(QWidget):
         if pos.y() > BPM_H:
             return -1
         ms = self.x_to_ms(pos.x())
-        segs = self.doc.project.chart.timemap.segments
+        clip = self.doc.project.clip_by_id(self.doc.state.selected_clip_id)
+        if clip is None or clip.kind != "audio":
+            clip = self.doc.project.audio_clip_at(ms)
+        if clip is None:
+            return -1
+        segs = clip.timemap.segments
         for i, s in enumerate(segs):
             if i == 0:
                 continue
-            if abs(self.ms_to_x(s.time_ms) - pos.x()) <= 5:
+            if abs(self.ms_to_x(clip.source_to_timeline(s.time_ms)) - pos.x()) <= 5:
                 return i
         for i in range(len(segs) - 1, -1, -1):
-            if ms >= segs[i].time_ms:
+            if ms >= clip.source_to_timeline(segs[i].time_ms):
                 return i
         return 0
 
@@ -996,26 +1183,178 @@ class TimelineWidget(QWidget):
         self.notesChanged.emit()
 
     def _grid_times(self, t_a: float, t_b: float) -> list[float]:
-        """两个时间点之间经过的所有网格点（按当前吸附网格）。"""
-        tm = self.doc.project.chart.timemap
+        """两个时间点之间经过的所有网格点（按各音频片段的吸附网格）。"""
         st = self.doc.state
         step = 1.0 / max(1.0, st.snap_divisor or 1.0)
-        b0, b1 = tm.beat(min(t_a, t_b)), tm.beat(max(t_a, t_b))
-        k0 = int(math.floor(b0 / step + 1e-6))
-        k1 = int(math.ceil(b1 / step - 1e-6))
-        if k1 - k0 > 2000:
-            k1 = k0 + 2000
-        return [tm.ms(k * step) for k in range(k0, k1 + 1)]
+        if not self.doc.project.audio_clips:
+            tm = self.doc.project.chart.timemap
+            b0, b1 = tm.beat(min(t_a, t_b)), tm.beat(max(t_a, t_b))
+            k0 = int(math.floor(b0 / step + 1e-6))
+            k1 = int(math.ceil(b1 / step - 1e-6))
+            return [tm.ms(k * step) for k in range(k0, k1 + 1)]
+        out: list[float] = []
+        for clip in self.doc.project.audio_clips:
+            lo = max(min(t_a, t_b), clip.offset_ms)
+            hi = min(max(t_a, t_b), clip.end_ms())
+            if hi <= lo:
+                continue
+            tm = clip.timemap
+            b0 = tm.beat(clip.timeline_to_source(lo))
+            b1 = tm.beat(clip.timeline_to_source(hi))
+            k0 = int(math.floor(b0 / step + 1e-6))
+            k1 = int(math.ceil(b1 / step - 1e-6))
+            if k1 - k0 > 2000:
+                k1 = k0 + 2000
+            out.extend(clip.source_to_timeline(tm.ms(k * step))
+                       for k in range(k0, k1 + 1))
+        return sorted(out)
 
     def _paint_add(self, ms: float) -> None:
         chart = self.doc.project.chart
+        clip = self.doc.project.audio_clip_at(ms)
+        if clip is None and self.doc.project.audio_clips:
+            return
         tol = max(6.0, 4.0 / max(1e-6, self.doc.state.px_per_ms))
         if self._paint_count > 2000:
             return
         if chart.find_at(ms, self._paint_row, tol) is not None:
             return
-        chart.add(Note(max(0.0, ms), self._paint_key, self._paint_row))
+        chart.add(Note(max(0.0, ms), self._paint_key, self._paint_row,
+                       clip_id=clip.id if clip else ""))
         self._paint_count += 1
+
+    def _select_clip(self, clip) -> None:
+        st = self.doc.state
+        cid = clip.id if clip is not None else ""
+        if st.selected_clip_id == cid:
+            self.update()
+            return
+        st.selected_clip_id = cid
+        self.doc.clear_selection()
+        self.clipSelected.emit(cid)
+        self._bg = None
+        self.update()
+
+    def _begin_clip_drag(self, clip, pos: QPoint) -> None:
+        self._select_clip(clip)
+        self.clipMoveStarted.emit()
+        group = self.doc.project.linked_clips(clip)
+        if not group:
+            group = [clip]
+        self.doc.begin(include_clips=True)
+        self._mode = "clip"
+        self._press_pos = pos
+        self._press_ms = self.x_to_ms(pos.x())
+        self._clip_drag = {
+            "clip": clip,
+            "group": group,
+            "orig": {c.id: float(c.offset_ms) for c in group},
+            "notes": {c.id: [(n, float(n.t)) for n in self.doc.project.notes_of_clip(c.id)]
+                      for c in group if c.kind == "audio"},
+            "last": 0.0,
+        }
+        self._snap_guide = None
+        self.update()
+
+    def _clips_overlap(self, group) -> bool:
+        gids = {c.id for c in group}
+        for a in group:
+            for b in self.doc.project.clips:
+                if b.id in gids or b.kind != a.kind:
+                    continue
+                if (a.offset_ms < b.end_ms() - 1e-6
+                        and a.end_ms() > b.offset_ms + 1e-6):
+                    return True
+        return False
+
+    def _clip_snap(self, raw_delta: float, group) -> tuple[float, float | None]:
+        st = self.doc.state
+        if not st.snap_on:
+            return raw_delta, None
+        threshold = CLIP_SNAP_PX / max(1e-6, st.px_per_ms)
+        gids = {c.id for c in group}
+        targets = [0.0, self._pos_ms]
+        for c in self.doc.project.clips:
+            if c.id in gids:
+                continue
+            targets.extend([c.offset_ms, c.end_ms()])
+        best_d = raw_delta
+        best_gap = threshold + 1.0
+        best_target = None
+        for c in group:
+            orig = self._clip_drag["orig"][c.id]
+            for edge in (orig, orig + c.duration_ms):
+                for tgt in targets:
+                    d = tgt - edge
+                    gap = abs(d - raw_delta)
+                    if gap < best_gap:
+                        best_gap = gap
+                        best_d = d
+                        best_target = tgt
+        return best_d, best_target
+
+    def _move_clip_drag(self, pos: QPoint, modifiers) -> None:
+        d = self._clip_drag
+        if not d:
+            return
+        raw = self.x_to_ms(pos.x()) - self._press_ms
+        group = d["group"]
+        min_orig = min(d["orig"].values())
+        raw = max(-min_orig, raw)
+        if modifiers & Qt.AltModifier:
+            delta, guide = raw, None
+        else:
+            delta, guide = self._clip_snap(raw, group)
+            delta = max(-min_orig, delta)
+        # 先试探位置，音频/视频轨都不允许重叠
+        for c in group:
+            c.offset_ms = d["orig"][c.id] + delta
+        if self._clips_overlap(group):
+            for c in group:
+                c.offset_ms = d["orig"][c.id] + d["last"]
+            self.statusMessage.emit(tr("片段重叠：换个位置（按住 Alt 可临时关吸附）"))
+            self._snap_guide = None
+            self.update()
+            return
+        shift = delta - d["last"]
+        if abs(shift) > 1e-9:
+            for c in group:
+                if c.kind != "audio":
+                    continue
+                for n, _orig_t in d["notes"].get(c.id, []):
+                    n.t = max(0.0, n.t + shift)
+            d["last"] = delta
+            self.doc.project.chart.sort()
+            self.notesChanged.emit()
+            self._bg = None
+            self.update()
+        self._snap_guide = guide
+        self.statusMessage.emit(
+            trf("移动片段：{a} → {b}", a=fmt_time(d["orig"][d["clip"].id]),
+                b=fmt_time(d["clip"].offset_ms)))
+
+    def _finish_clip_drag(self) -> None:
+        d = self._clip_drag
+        self._clip_drag = None
+        self._mode = ""
+        self._snap_guide = None
+        if not d:
+            return
+        if abs(d["last"]) > 1e-9:
+            self.doc.commit("移动片段")
+            self.clipMoved.emit()
+        else:
+            self.doc.cancel()
+        self.update()
+
+    def _draw_clip_snap_guide(self, p: QPainter, h: int) -> None:
+        if self._snap_guide is None:
+            return
+        x = self.ms_to_x(self._snap_guide)
+        if x < GUTTER or x > self.width():
+            return
+        p.setPen(QPen(QColor("#ffd166"), 1, Qt.DashLine))
+        p.drawLine(QPointF(x, BPM_H + RULER_H), QPointF(x, self._media_bottom()))
 
     def mousePressEvent(self, ev) -> None:  # noqa: N802
         pos = ev.position().toPoint()
@@ -1030,17 +1369,25 @@ class TimelineWidget(QWidget):
         if ev.button() == Qt.RightButton:
             self._open_context_menu(pos)
             return
+        clip = self._clip_at_pos(pos)
+        if ev.button() == Qt.LeftButton and clip is not None:
+            if st.tool == "range" or (ev.modifiers() & Qt.ShiftModifier):
+                self._select_clip(clip)
+                self._start_range(pos)
+            else:
+                self._begin_clip_drag(clip, pos)
+            return
         if pos.y() < BPM_H:
-            self._mode = "bpm"
-            self._bpm_index = self._bpm_at(pos)
-            self._press_pos = pos
-            self._press_ms = self.x_to_ms(pos.x())
-            self.doc.begin()
+            ms = max(0.0, self.x_to_ms(pos.x()))
+            c = self.doc.project.audio_clip_at(ms)
+            if c is not None:
+                self._select_clip(c)
+            self.seekRequested.emit(ms)
             return
         if pos.y() < BPM_H + RULER_H or pos.y() >= self._rows_bottom():
-            # 标尺 / 波形 / 频谱 / 胶片条：
-            #   默认拖动 = 拖播放头（自由定位，不吸附）
-            #   Shift 拖动 或「框选区间」模式 = 框选时间区间
+            # 标尺 / 空档 / 波形 / 频谱：拖播放头或框选；点空档取消片段选择
+            if ev.button() == Qt.LeftButton and pos.y() >= self._rows_bottom():
+                self._select_clip(None)
             if st.tool == "range" or (ev.modifiers() & Qt.ShiftModifier):
                 self._start_range(pos)
             else:
@@ -1061,6 +1408,12 @@ class TimelineWidget(QWidget):
             return
 
         note = self._note_at(pos)
+        if note is not None:
+            owner = self._note_owner(note)
+            if owner is not None and owner.id != st.selected_clip_id:
+                st.selected_clip_id = owner.id
+                self.clipSelected.emit(owner.id)
+                self._bg = None
         if note is None:
             if st.tool == "draw":
                 self._start_paint(pos, row)
@@ -1096,6 +1449,9 @@ class TimelineWidget(QWidget):
         self._mouse_row = (self.row_at(pos.y())
                            if self._rows_top() <= pos.y() < self._rows_bottom() else -1)
         st = self.doc.state
+        if self._mode == "clip" and self._clip_drag:
+            self._move_clip_drag(pos, ev.modifiers())
+            return
         if self._mode == "pan":
             st.view_t0 = self._press_ms - (pos.x() - self._press_pos.x()) / max(1e-6, st.px_per_ms)
             self.update()
@@ -1122,15 +1478,7 @@ class TimelineWidget(QWidget):
             self.update()
             return
         if self._mode == "bpm":
-            idx = self._bpm_index
-            segs = self.doc.project.chart.timemap.segments
-            if 0 < idx < len(segs):
-                ms = max(segs[idx - 1].time_ms + 1.0, self.snap(max(0.0, self.x_to_ms(pos.x()))))
-                segs[idx].time_ms = ms
-                self.doc.project.chart.set_segments(segs, self.doc.project.chart.offset_ms)
-                self.statusMessage.emit(trf("BPM 段 {i} 起点 {t}", i=idx + 1, t=fmt_time(ms)))
-                self.notesChanged.emit()
-                self.update()
+            # 旧版直接拖顶部 BPM 段；现在 BPM 按片段独立，统一在右侧表格编辑
             return
         if self._mode == "tail" and self._anchor is not None:
             ms = max(self._anchor.t, self.snap(max(0.0, self.x_to_ms(pos.x()))))
@@ -1185,10 +1533,15 @@ class TimelineWidget(QWidget):
         mode = self._mode
         self._mode = ""
         self.setCursor(Qt.ArrowCursor)
+        if mode == "clip":
+            self._finish_clip_drag()
+            return
         if mode == "rubber" and self._rubber is not None:
             r = self._rubber
             picked = []
             for n in self.doc.project.chart.in_range(self.x_to_ms(r.left()), self.x_to_ms(r.right())):
+                if not self._note_visible(n):
+                    continue
                 y = self.row_y(n.lane) + self._row_h() * 0.5
                 if r.top() - 8 <= y <= r.bottom() + 8:
                     picked.append(n)
@@ -1281,6 +1634,13 @@ class TimelineWidget(QWidget):
         chart = self.doc.project.chart
         st = self.doc.state
         menu = QMenu(self)
+        clip_hit = self._clip_at_pos(pos)
+        if clip_hit is not None:
+            self._select_clip(clip_hit)
+            menu.addAction(tr("在播放头切分片段"), self.clipSplitRequested.emit)
+            menu.addAction(tr("删除片段"), self.clipDeleteRequested.emit)
+            menu.exec(self.mapToGlobal(pos))
+            return
         has_clip = bool(getattr(self, "_clipboard_has", False))
         if st.has_range():
             menu.addAction(tr("在这个区间填充音符…"),
@@ -1293,12 +1653,18 @@ class TimelineWidget(QWidget):
             menu.addSeparator()
         if pos.y() <= BPM_H:
             ms = self.snap(max(0.0, self.x_to_ms(pos.x())))
-            menu.addAction(tr("在此处添加 BPM 段…"), lambda: self.bpmAddRequested.emit(ms))
-            idx = self._bpm_at(pos)
-            segs = chart.timemap.segments
-            if 0 < idx < len(segs):
-                menu.addAction(tr("编辑此 BPM 段…"), lambda: self.bpmEditRequested.emit(idx))
-                menu.addAction(tr("删除此 BPM 段"), lambda: self._remove_segment(idx))
+            clip = self.doc.project.audio_clip_at(ms)
+            if clip is not None:
+                self._select_clip(clip)
+            if clip is not None:
+                menu.addAction(tr("在此处添加 BPM 段…"),
+                               lambda: self.bpmAddRequested.emit(ms))
+                idx = self._bpm_at(pos)
+                if 0 < idx < len(clip.timemap.segments):
+                    menu.addAction(tr("编辑此 BPM 段…"),
+                                   lambda: self.bpmEditRequested.emit(idx))
+                    menu.addAction(tr("删除此 BPM 段"),
+                                   lambda: self._remove_segment(idx))
             menu.exec(self.mapToGlobal(pos))
             return
 
@@ -1386,8 +1752,18 @@ class TimelineWidget(QWidget):
         self.update()
 
     def _extend_hold(self, bars: float) -> None:
-        tm = self.doc.project.chart.timemap
-        delta = (60000.0 / tm.bpm_at(self._pos_ms)) * 4.0 * bars
+        sel = list(self.doc.selection)
+        if not sel:
+            return
+        n0 = sel[0]
+        clip = self.doc.project.clip_by_id(n0.clip_id) or self.doc.project.audio_clip_at(n0.t)
+        bpm = 120.0
+        if clip is not None:
+            src = clip.timeline_to_source(self._pos_ms)
+            bpm = clip.timemap.bpm_at(src)
+        elif not self.doc.project.audio_clips:
+            bpm = self.doc.project.chart.timemap.bpm_at(self._pos_ms)
+        delta = (60000.0 / bpm) * 4.0 * bars
 
         def fn():
             for n in self.doc.selection:
@@ -1398,8 +1774,12 @@ class TimelineWidget(QWidget):
         self.update()
 
     def _add_at(self, ms: float, row: int) -> None:
+        clip = self.doc.project.audio_clip_at(ms)
+        if clip is None and self.doc.project.audio_clips:
+            self.statusMessage.emit(tr("空档不能添加音符"))
+            return
         key = self.rows()[row]
-        nn = Note(ms, key, row)
+        nn = Note(ms, key, row, clip_id=clip.id if clip else "")
         self.doc.edit("添加音符", lambda: self.doc.project.chart.add(nn))
         self.doc.set_selection([nn])
         self.notesChanged.emit()
@@ -1418,8 +1798,15 @@ class TimelineWidget(QWidget):
         self.update()
 
     def _remove_segment(self, idx: int) -> None:
-        before = self.doc.snapshot()
-        self.doc.project.chart.remove_segment(idx)
+        clip = self.doc.project.clip_by_id(self.doc.state.selected_clip_id)
+        if clip is None or clip.kind != "audio":
+            clip = self.doc.project.audio_clip_at(self._pos_ms)
+        if clip is None or idx <= 0 or idx >= len(clip.timemap.segments):
+            return
+        before = self.doc.snapshot(include_clips=True)
+        segs = list(clip.timemap.segments)
+        segs.pop(idx)
+        clip.timemap.set_segments(segs, clip.timemap.offset_ms)
         self.doc.commit_external("删除 BPM 段", before)
         self.notesChanged.emit()
         self.update()

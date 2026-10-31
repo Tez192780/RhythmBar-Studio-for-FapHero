@@ -245,7 +245,6 @@ class BarRenderer:
 
     # ----------------------------------------------------------------- 刻度
     def _draw_ticks(self, p: QPainter, w: float, h: float, t_ms: float) -> None:
-        tm = self.p.chart.timemap
         speed = self.speed(w)
         half = max(w * self.rs.judge_ratio, w * (1 - self.rs.judge_ratio))
         t0 = t_ms - (half / speed) * 1000.0 - 50
@@ -259,25 +258,55 @@ class BarRenderer:
         top = h * 0.06
         bot = h * 0.94
         major = self.rs.ticks == "bar"
-        for t in tm.grid_lines(t0, t1, 1.0 if major else 4.0):
-            b = tm.beat(t)
-            is_bar = abs(b - round(b / 4.0) * 4.0) < 1e-6
-            if major and not is_bar:
+        if not self.p.audio_clips:
+            tm = self.p.chart.timemap
+            for t in tm.grid_lines(t0, t1, 1.0 if major else 4.0):
+                b = tm.beat(t)
+                is_bar = abs(b - round(b / 4.0) * 4.0) < 1e-6
+                if major and not is_bar:
+                    continue
+                for side in (1, -1):
+                    x = self.note_x(t, t_ms, w, side)
+                    if -4 <= x <= w + 4:
+                        ln = (bot - top) * (0.5 if is_bar else 0.28)
+                        cy = h * 0.5
+                        p.drawLine(QPointF(x, cy - ln / 2), QPointF(x, cy + ln / 2))
+            return
+        for clip in self.p.audio_clips:
+            lo = max(t0, clip.offset_ms)
+            hi = min(t1, clip.end_ms())
+            if hi <= lo:
                 continue
-            for side in (1, -1):
-                x = self.note_x(t, t_ms, w, side)
-                if -4 <= x <= w + 4:
-                    ln = (bot - top) * (0.5 if is_bar else 0.28)
-                    cy = h * 0.5
-                    p.drawLine(QPointF(x, cy - ln / 2), QPointF(x, cy + ln / 2))
+            tm = clip.timemap
+            s0 = clip.timeline_to_source(lo)
+            s1 = clip.timeline_to_source(hi)
+            for src in tm.grid_lines(s0, s1, 1.0 if major else 4.0):
+                t = clip.source_to_timeline(src)
+                b = tm.beat(src)
+                is_bar = abs(b - round(b / 4.0) * 4.0) < 1e-6
+                if major and not is_bar:
+                    continue
+                for side in (1, -1):
+                    x = self.note_x(t, t_ms, w, side)
+                    if -4 <= x <= w + 4:
+                        ln = (bot - top) * (0.5 if is_bar else 0.28)
+                        cy = h * 0.5
+                        p.drawLine(QPointF(x, cy - ln / 2), QPointF(x, cy + ln / 2))
 
     # --------------------------------------------------------------- 判定点
     def _judge_pulse(self, t_ms: float) -> float:
         js: JudgeStyle = self.th.judge
         if not js.pulse:
             return 0.0
-        tm = self.p.chart.timemap
-        b = tm.beat(t_ms)
+        clip = self.p.audio_clip_at(t_ms)
+        if clip is None:
+            if self.p.audio_clips:
+                return 0.0
+            tm = self.p.chart.timemap
+            b = tm.beat(t_ms)
+        else:
+            tm = clip.timemap
+            b = tm.beat(clip.timeline_to_source(t_ms))
         frac = b - math.floor(b)
         decay = math.exp(-frac * 5.0)
         accent = 1.0 if abs((math.floor(b) % 4)) < 1e-6 else 0.55

@@ -5,8 +5,9 @@ from __future__ import annotations
 import copy
 import json
 import os
+import uuid
 from bisect import bisect_left, bisect_right
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 
 from .theme import Theme
 from .timing import BpmSegment, TimeMap
@@ -22,6 +23,7 @@ class Note:
     lane: int = 0               # 时间轴行号（= 类型行），渲染时决定纵向位置
     dur: float = 0.0            # 长条时长（毫秒），0 = 单点
     side: int = 0               # 0 自动 / -1 左 / +1 右（双侧汇聚模式用）
+    clip_id: str = ""           # 所属音频片段；空 = 旧工程/未绑定
 
     @property
     def end(self) -> float:
@@ -33,6 +35,8 @@ class Note:
             d["dur"] = round(float(self.dur), 4)
         if self.side:
             d["side"] = int(self.side)
+        if self.clip_id:
+            d["clip_id"] = self.clip_id
         return d
 
     @staticmethod
@@ -43,6 +47,7 @@ class Note:
             int(d.get("lane", 0)),
             float(d.get("dur", 0.0)),
             int(d.get("side", 0)),
+            str(d.get("clip_id", "") or ""),
         )
 
 
@@ -226,7 +231,11 @@ class ExportSettings:
 # --------------------------------------------------------------------- 工程
 @dataclass(eq=False)
 class MediaClip:
-    """一段导入的媒体（音频或视频），可以摆到时间轴上的任意位置。"""
+    """一段独立媒体（视频或音频），可以单独移动、切分。
+
+    音频片段的 timemap 使用“源文件时间”：0 = 源文件开头；
+    画到总时间轴时用 offset_ms + (source - src_start_ms) 换算。
+    """
 
     path: str = ""
     kind: str = "audio"          # audio | video
@@ -234,7 +243,14 @@ class MediaClip:
     src_start_ms: float = 0.0    # 从源文件的哪一刻开始取
     duration_ms: float = 0.0     # 取多长（0 = 取到源结尾）
     name: str = ""
-    has_audio: bool = True
+    has_audio: bool = True       # 仅视频用于兼容旧工程；新视频片段为 False
+    id: str = ""
+    link_id: str = ""            # 视频 + 分离音频用同一个链接组
+    timemap: TimeMap = field(default_factory=TimeMap)
+
+    def __post_init__(self):
+        if not self.id:
+            self.id = uuid.uuid4().hex[:10]
 
     @property
     def label(self) -> str:
@@ -243,19 +259,51 @@ class MediaClip:
     def end_ms(self) -> float:
         return self.offset_ms + self.duration_ms
 
+    def source_end_ms(self) -> float:
+        return self.src_start_ms + self.duration_ms
+
+    def contains_time(self, ms: float, pad: float = 0.0) -> bool:
+        return (self.offset_ms - pad <= float(ms)
+                <= self.offset_ms + self.duration_ms + pad)
+
+    def source_to_timeline(self, source_ms: float) -> float:
+        return self.offset_ms + (float(source_ms) - self.src_start_ms)
+
+    def timeline_to_source(self, timeline_ms: float) -> float:
+        return self.src_start_ms + (float(timeline_ms) - self.offset_ms)
+
+    def linked_clips(self, clips: list["MediaClip"]) -> list["MediaClip"]:
+        if not self.link_id:
+            return [self]
+        return [c for c in clips if c is self or (c.link_id and c.link_id == self.link_id)]
+
+    def clone(self) -> "MediaClip":
+        d = self.to_dict()
+        d["id"] = uuid.uuid4().hex[:10]
+        return MediaClip.from_dict(d)
+
     def to_dict(self) -> dict:
         return {
             "path": self.path, "kind": self.kind, "offset_ms": round(self.offset_ms, 3),
-            "src_start_ms": round(self.src_start_ms, 3), "duration_ms": round(self.duration_ms, 3),
+            "src_start_ms": round(self.src_start_ms, 3),
+            "duration_ms": round(self.duration_ms, 3),
             "name": self.name, "has_audio": bool(self.has_audio),
+            "id": self.id, "link_id": self.link_id,
+            "timemap": self.timemap.to_dict(),
         }
 
     @staticmethod
     def from_dict(d: dict) -> "MediaClip":
-        c = MediaClip()
-        for k, v in (d or {}).items():
-            if hasattr(c, k):
-                setattr(c, k, v)
+        c = MediaClip(path=str(d.get("path", "") or ""),
+                      kind=str(d.get("kind", "audio") or "audio"),
+                      offset_ms=float(d.get("offset_ms", 0.0) or 0.0),
+                      src_start_ms=float(d.get("src_start_ms", 0.0) or 0.0),
+                      duration_ms=float(d.get("duration_ms", 0.0) or 0.0),
+                      name=str(d.get("name", "") or ""),
+                      has_audio=bool(d.get("has_audio", True)),
+                      id=str(d.get("id", "") or ""),
+                      link_id=str(d.get("link_id", "") or ""))
+        c.timemap = TimeMap.from_dict(d.get("timemap", {}))
         return c
 
 
@@ -271,11 +319,78 @@ class Project:
         self.audio_duration_ms: float = 0.0
         self.path: str = ""
 
+    # --------------------------------------------------------- 片段辅助
+    @property
+    def audio_clips(self) -> list[MediaClip]:
+        return sorted((c for c in self.clips if c.kind == "audio"),
+                      key=lambda c: (c.offset_ms, c.id))
+
+    @property
+    def video_clips(self) -> list[MediaClip]:
+        return sorted((c for c in self.clips if c.kind == "video"),
+                      key=lambda c: (c.offset_ms, c.id))
+
+    def clip_by_id(self, clip_id: str) -> MediaClip | None:
+        for c in self.clips:
+            if c.id == clip_id:
+                return c
+        return None
+
+    def clip_at(self, ms: float, kind: str = "audio") -> MediaClip | None:
+        for c in self.clips:
+            if c.kind == kind and c.contains_time(ms):
+                return c
+        return None
+
+    def audio_clip_at(self, ms: float) -> MediaClip | None:
+        return self.clip_at(ms, "audio")
+
+    def video_clip_at(self, ms: float) -> MediaClip | None:
+        return self.clip_at(ms, "video")
+
+    def nearest_audio_clip(self, ms: float) -> MediaClip | None:
+        clips = self.audio_clips
+        if not clips:
+            return None
+        return min(clips, key=lambda c: min(abs(ms - c.offset_ms),
+                                           abs(ms - c.end_ms())))
+
+    def timemap_at(self, ms: float) -> TimeMap:
+        c = self.audio_clip_at(ms)
+        return c.timemap if c is not None else self.chart.timemap
+
+    def linked_clips(self, clip: MediaClip) -> list[MediaClip]:
+        return clip.linked_clips(self.clips)
+
+    def linked_group(self, clip: MediaClip) -> list[MediaClip]:
+        return clip.linked_clips(self.clips)
+
+    def notes_of_clip(self, clip_id: str) -> list[Note]:
+        return [n for n in self.chart.notes if n.clip_id == clip_id]
+
+    def notes_in_clip_range(self, clip: MediaClip) -> list[Note]:
+        return [n for n in self.chart.notes
+                if n.clip_id == clip.id and clip.contains_time(n.t, 0.6)]
+
+    def nearest_note_clip(self, ms: float) -> MediaClip | None:
+        """旧工程音符归属：优先包含它的片段，否则最近的音频片段。"""
+        c = self.audio_clip_at(ms)
+        return c or self.nearest_audio_clip(ms)
+
+    def audio_end_ms(self) -> float:
+        return max((c.end_ms() for c in self.audio_clips), default=0.0)
+
+    def video_end_ms(self) -> float:
+        return max((c.end_ms() for c in self.video_clips), default=0.0)
+
+    def media_end_ms(self) -> float:
+        return max(self.audio_end_ms(), self.video_end_ms(), 0.0)
+
     # ------------------------------------------------------------- 序列化
     def to_dict(self) -> dict:
         return {
             "app": "rbar",
-            "version": 2,
+            "version": 3,
             "audio_path": self.audio_path,
             "video_path": self.video_path,
             "clips": [c.to_dict() for c in self.clips],
@@ -287,7 +402,9 @@ class Project:
 
     def load_dict(self, d: dict) -> None:
         """就地更新（保持 chart 对象身份不变，撤销/重做后旧引用依然有效）。"""
+        old_version = int(d.get("version", 1) or 1)
         chart = Chart.from_dict(d.get("chart", {}))
+        global_tm = chart.timemap
         self.chart.timemap = chart.timemap
         self.chart.notes = chart.notes
         self.chart.sort()
@@ -296,9 +413,10 @@ class Project:
         self.export = ExportSettings.from_dict(d.get("export", {}))
         self.audio_path = str(d.get("audio_path", ""))
         self.video_path = str(d.get("video_path", ""))
-        self.clips = [MediaClip.from_dict(x) for x in (d.get("clips") or [])]
+        raw_clips = d.get("clips") or []
+        self.clips = [MediaClip.from_dict(x) for x in raw_clips]
         if not self.clips:
-            # v1 工程只有 audio_path / video_path：补成片段，否则时长信息会丢
+            # v1 工程只有 audio_path / video_path
             if self.audio_path:
                 self.clips.append(MediaClip(path=self.audio_path, kind="audio",
                                             name=os.path.basename(self.audio_path),
@@ -307,6 +425,45 @@ class Project:
                 self.clips.append(MediaClip(path=self.video_path, kind="video",
                                             name=os.path.basename(self.video_path),
                                             has_audio=False))
+
+        # 旧版视频+音频混在一起：拆成视频轨与音频轨，并建立链接
+        for c in list(self.clips):
+            if old_version < 3 and c.kind == "video" and c.has_audio:
+                c.has_audio = False
+                link = c.link_id or uuid.uuid4().hex[:10]
+                c.link_id = link
+                ac = MediaClip(path=c.path, kind="audio", offset_ms=c.offset_ms,
+                               src_start_ms=c.src_start_ms, duration_ms=c.duration_ms,
+                               name=c.name, has_audio=True, link_id=link)
+                self.clips.append(ac)
+
+        # 旧工程没有片段级 BPM：把全局 BPM 按源文件时间复制给每个音频片段
+        if old_version < 3:
+            for c in self.clips:
+                if c.kind != "audio":
+                    continue
+                off = c.src_start_ms + (global_tm.offset_ms - c.offset_ms)
+                segs = [BpmSegment(c.src_start_ms + (s.time_ms - c.offset_ms), s.bpm)
+                        for s in global_tm.segments]
+                c.timemap = TimeMap(segs, off)
+        if not any(c.kind == "audio" and c.timemap for c in self.clips):
+            # 旧工程没有音频时仍保留全局 BPM 供界面兜底
+            pass
+
+        # 旧音符没有归属：按包含/最近的音频片段补 clip_id
+        for n in self.chart.notes:
+            if not n.clip_id:
+                c = self.nearest_note_clip(n.t)
+                if c is not None:
+                    n.clip_id = c.id
+
+        # 兼容字段
+        acs = self.audio_clips
+        vcs = self.video_clips
+        if acs and not self.audio_path:
+            self.audio_path = acs[0].path
+        if vcs and not self.video_path:
+            self.video_path = vcs[0].path
 
     @staticmethod
     def _rel(path: str, base: str) -> str:

@@ -98,7 +98,8 @@ class MainWindow(QMainWindow):
         self._films: dict[str, object] = {}        # 路径 -> Filmstrip
         self._peaks = None
         self._zoomed_once = False
-        self.spec = None                 # 频谱图
+        self.spec = None                 # 兼容旧测试：第一段音频的频谱
+        self._clip_specs: dict[str, object] = {}   # clip_id -> Spectrogram
         self._spec_task: Task | None = None
         self._update_task: Task | None = None      # 检查更新
         self._media_is_video = False
@@ -456,8 +457,111 @@ class MainWindow(QMainWindow):
         self.doc.dirtyChanged.connect(self._on_dirty)
         self.engine.stateChanged.connect(self._on_play_state)
         self.engine.finished.connect(lambda: self._on_play_state(False))
+        self.timeline.clipSelected.connect(self._on_clip_selected)
+        self.timeline.clipMoveStarted.connect(self.pause)
+        self.timeline.clipMoved.connect(self._rebuild_media)
+        self.timeline.clipSplitRequested.connect(self.split_selected_clip)
+        self.timeline.clipDeleteRequested.connect(self.delete_selected_clip)
+        self.doc.audioNeedsReload.connect(self._rebuild_media)
 
-    # ---------------------------------------------------- 配置文件里的工程默认值
+    # --------------------------------------------------------- 片段操作
+    def _selected_clip(self):
+        cid = getattr(self.doc.state, "selected_clip_id", "")
+        return self.doc.project.clip_by_id(cid) if cid else None
+
+    def _target_audio_clip(self):
+        c = self._selected_clip()
+        if c is None:
+            return None
+        if c.kind == "audio":
+            return c
+        for other in self.doc.project.linked_clips(c):
+            if other.kind == "audio":
+                return other
+        return None
+
+    def _on_clip_selected(self, _cid: str = "") -> None:
+        self.panel_chart.refresh()
+        c = self._selected_clip()
+        target = self._target_audio_clip()
+        if c is None:
+            self.statusBar().showMessage(i18n.tr("未选中媒体片段"), 2500)
+        elif target is not None:
+            self.statusBar().showMessage(
+                i18n.trf("已选中片段：{name}", name=target.label), 3000)
+        else:
+            self.statusBar().showMessage(
+                i18n.trf("已选中片段：{name}（无音频）", name=c.label), 3000)
+
+    def split_selected_clip(self) -> None:
+        c = self._selected_clip()
+        if c is None:
+            self._info("先选片段", "先在视频轨或音频轨点击选中要切分的片段。")
+            return
+        cut = float(self.position_ms)
+        if not c.contains_time(cut) or cut - c.offset_ms < 2.0 or c.end_ms() - cut < 2.0:
+            self._info("切分位置无效", "把播放头移到片段内部再切分。")
+            return
+        import uuid
+        group = self.doc.project.linked_clips(c)
+        before = self.doc.snapshot(include_clips=True)
+        right_link = uuid.uuid4().hex[:10]
+        new_clips = []
+        for old in group:
+            if not old.contains_time(cut):
+                continue
+            left_dur = cut - old.offset_ms
+            right_dur = old.end_ms() - cut
+            if left_dur < 2 or right_dur < 2:
+                continue
+            right = old.clone()
+            right.offset_ms = cut
+            right.src_start_ms = old.timeline_to_source(cut)
+            right.duration_ms = right_dur
+            right.link_id = right_link if old.link_id else ""
+            old.duration_ms = left_dur
+            new_clips.append(right)
+            if old.kind == "audio":
+                for n in list(self.doc.project.chart.notes):
+                    if n.clip_id != old.id:
+                        continue
+                    if n.t >= cut:
+                        n.clip_id = right.id
+                    elif n.t + n.dur > cut > n.t:
+                        # 长条跨切点：拆成两条
+                        right_n = Note(cut, n.type, n.lane, n.end - cut, n.side, right.id)
+                        n.dur = cut - n.t
+                        self.doc.project.chart.notes.append(right_n)
+        if not new_clips:
+            self.doc.cancel()
+            return
+        self.doc.project.clips.extend(new_clips)
+        self.doc.project.chart.sort()
+        self.doc.commit_external("切分片段", before)
+        self._rebuild_media()
+        self.statusBar().showMessage(
+            i18n.trf("已切分片段：{name}", name=c.label), 3000)
+
+    def delete_selected_clip(self) -> None:
+        c = self._selected_clip()
+        if c is None:
+            return
+        group = self.doc.project.linked_clips(c)
+        ids = {x.id for x in group}
+        before = self.doc.snapshot(include_clips=True)
+        self.doc.project.clips = [x for x in self.doc.project.clips if x.id not in ids]
+        self.doc.project.chart.notes = [
+            n for n in self.doc.project.chart.notes if n.clip_id not in ids]
+        self.doc.project.chart.sort()
+        self.doc.state.selected_clip_id = ""
+        acs = self.doc.project.audio_clips
+        vcs = self.doc.project.video_clips
+        self.doc.project.audio_path = acs[0].path if acs else ""
+        self.doc.project.video_path = vcs[0].path if vcs else ""
+        self.doc.commit_external("删除片段", before)
+        self._rebuild_media()
+        self.panel_chart.refresh()
+
     def _apply_config_defaults(self, project: Project) -> None:
         """把 rbar_settings.json 里的外观/导出偏好用到新工程上。"""
         if isinstance(self.settings.theme, dict):
@@ -521,14 +625,24 @@ class MainWindow(QMainWindow):
         self._push_beats()
 
     def _push_beats(self) -> None:
-        """把节拍时间喂给节拍器。"""
-        tm = self.doc.project.chart.timemap
-        dur = self.engine.duration_ms or 60000.0
-        try:
-            beats = tm.grid_lines(0.0, dur, 1.0, limit=20000)
-        except Exception:
-            beats = []
-        self.engine.set_beats(beats)
+        """把各音频片段的节拍拼起来喂给节拍器；空档没有节拍。"""
+        if not self.doc.project.audio_clips:
+            try:
+                beats = self.doc.project.chart.timemap.grid_lines(
+                    0.0, self.engine.duration_ms or 60000.0, 1.0, limit=20000)
+            except Exception:
+                beats = []
+            self.engine.set_beats(beats)
+            return
+        beats: list[float] = []
+        for c in self.doc.project.audio_clips:
+            try:
+                srcs = c.timemap.grid_lines(c.src_start_ms, c.source_end_ms(),
+                                            1.0, limit=20000)
+            except Exception:
+                srcs = []
+            beats.extend(c.source_to_timeline(s) for s in srcs)
+        self.engine.set_beats(sorted(beats))
 
     def _sync_view_actions(self) -> None:
         """工程/状态切换后把菜单、工具栏、循环勾选框同步到 EditorState。"""
@@ -735,10 +849,10 @@ class MainWindow(QMainWindow):
 
     def _toggle_spec(self, on: bool) -> None:
         self.doc.state.show_spectrum = bool(on)
-        if on and self.spec is not None:
-            self.timeline.set_spectrogram(self.spec)
+        if on and self._clip_specs:
+            self.timeline.set_spectrograms(self._clip_specs)
         elif not on:
-            self.timeline.set_spectrogram(None)
+            self.timeline.clear_spectrograms()
         self._update_spec_state()
         self.timeline.update()
 
@@ -747,27 +861,41 @@ class MainWindow(QMainWindow):
 
     def _update_spec_state(self) -> None:
         on = self.a_spec.isChecked()
-        if on and self.spec is not None and self.timeline._spec is None:
-            self.timeline.set_spectrogram(self.spec)
-        if on and self.spec is None and self.engine.samples is not None:
+        if on and self._clip_specs and not self.timeline._specs:
+            self.timeline.set_spectrograms(self._clip_specs)
+        if on and not self._clip_specs and self.doc.project.audio_clips:
             self.start_spectrogram()
         self.spectrum.setVisible(self.a_live.isChecked())
 
     # ============================================================== 频谱
     def start_spectrogram(self) -> None:
-        """后台算整首歌的频谱图（算完给时间轴用）。"""
-        if self.engine.samples is None or self._spec_task is not None:
+        """后台按每个音频片段计算频谱图。"""
+        clips = self.doc.project.audio_clips
+        if not clips or self._spec_task is not None:
             return
-        samples = self.engine.samples
-        sr = self.engine.sr
+        inputs = []
+        for c in clips:
+            got = self._media_cache.get(c.path)
+            if got is None:
+                continue
+            samples, sr = got
+            s0 = int(c.src_start_ms / 1000.0 * sr)
+            take = c.duration_ms or (samples.shape[0] / sr * 1000.0 - c.src_start_ms)
+            seg = samples[s0: s0 + int(take / 1000.0 * sr)]
+            if seg.size:
+                inputs.append((c.id, seg, sr))
+        if not inputs:
+            return
         token = self._spec_token
         t0 = time.perf_counter()
 
         def work():
             from ..audio import spectrogram
 
-            sp = spectrogram(samples, sr)
-            return sp, time.perf_counter() - t0
+            out = {}
+            for cid, seg, sr in inputs:
+                out[cid] = spectrogram(seg, sr)
+            return out, time.perf_counter() - t0
 
         self.statusBar().showMessage(i18n.tr("正在计算频谱图…"))
         task = Task(work, parent=self)
@@ -777,15 +905,16 @@ class MainWindow(QMainWindow):
             if self._spec_task is task:
                 self._spec_task = None
             if token != self._spec_token:
-                # 媒体/工程已经换了，旧频谱绝不能套到新音频上
-                if self.a_spec.isChecked() and self.engine.samples is not None:
+                if self.a_spec.isChecked() and self.doc.project.audio_clips:
                     QTimer.singleShot(120, self.start_spectrogram)
                 return
-            sp, sec = res
-            self.spec = sp
-            self.timeline.set_spectrogram(sp if self.a_spec.isChecked() else None)
+            specs, sec = res
+            self._clip_specs = specs
+            self.spec = next(iter(specs.values()), None)
+            self.timeline.set_spectrograms(specs if self.a_spec.isChecked() else {})
+            frames = sum(getattr(s, "frames", 0) for s in specs.values())
             self.statusBar().showMessage(
-                i18n.trf("频谱图完成（{sec:.1f}s，{frames} 列）", sec=sec, frames=sp.frames), 4000)
+                i18n.trf("频谱图完成（{sec:.1f}s，{frames} 列）", sec=sec, frames=frames), 4000)
 
         def on_fail(msg: str) -> None:
             if self._spec_task is task:
@@ -932,6 +1061,7 @@ class MainWindow(QMainWindow):
 
     def _media_ready(self, path: str, mode: str, res) -> None:
         from ..model import MediaClip
+        import uuid
 
         self._media_busy = False
         QApplication.restoreOverrideCursor()
@@ -950,55 +1080,79 @@ class MainWindow(QMainWindow):
             video_ms = float(film.times[-1]) + float(film.step_ms)
         if info is not None:
             video_ms = max(video_ms, float(info.duration_ms or 0.0))
-        dur = max(audio_ms, video_ms, 1000.0)
+        group_dur = max(audio_ms, video_ms, 1000.0)
 
-        clip = MediaClip(path=path, kind="video" if is_video else "audio",
-                         duration_ms=dur, name=os.path.basename(path),
-                         has_audio=samples is not None)
         clips = self.doc.project.clips
         if mode == "replace":
             clips.clear()
-            clip.offset_ms = 0.0
+            start = 0.0
         elif mode == "insert":
-            at = self.position_ms
-            clip.offset_ms = at
+            start = self.position_ms
             for c in clips:
-                if c.offset_ms >= at:
-                    c.offset_ms += dur
+                if c.offset_ms >= start:
+                    c.offset_ms += group_dur
         else:                                   # append
-            clip.offset_ms = self._video_len()
-        clips.append(clip)
+            start = self.doc.project.media_end_ms()
+
+        link = uuid.uuid4().hex[:10] if is_video and samples is not None else ""
+        made: list[MediaClip] = []
+        if is_video:
+            made.append(MediaClip(path=path, kind="video", offset_ms=start,
+                                  duration_ms=max(video_ms, 1000.0),
+                                  name=os.path.basename(path), has_audio=False,
+                                  link_id=link))
+        if samples is not None:
+            made.append(MediaClip(path=path, kind="audio", offset_ms=start,
+                                  duration_ms=max(audio_ms, 1000.0),
+                                  name=(os.path.basename(path) + "（音频）") if is_video
+                                  else os.path.basename(path),
+                                  has_audio=True, link_id=link))
+        clips.extend(made)
 
         if is_video:
             self.doc.project.video_path = path
-        if clip.has_audio:
+        if samples is not None:
             self.doc.project.audio_path = path
         self.doc.touch("导入媒体")
         self._rebuild_media()
+        if made:
+            target = next((c for c in made if c.kind == "audio"), made[0])
+            self.doc.state.selected_clip_id = target.id
+            self.timeline.update()
+            self.panel_chart.refresh()
         if mode == "replace":
             self.seek(0.0)
         self.settings.remember_dir(path)
         self.settings.save()
         self.refvideo.setVisible(self.a_ref.isChecked() and bool(self._films))
         mode_txt = {"replace": "替换并载入", "append": "追加到末尾", "insert": "插入到播放头"}[mode]
+        kind_txt = ("视频+分离音频" if is_video and samples is not None
+                    else ("视频（无声）" if is_video else "音频"))
         self.statusBar().showMessage(
-            f"已{mode_txt}：{os.path.basename(path)}　"
-            f"（{dur / 1000:.1f}s，{'视频+音频' if is_video and clip.has_audio else ('视频（无声）' if is_video else '音频')}）"
+            f"已{mode_txt}：{os.path.basename(path)}（{group_dur / 1000:.1f}s，{kind_txt}）"
             f"　时间轴共 {len(clips)} 段 / {self._video_len() / 1000:.1f}s", 9000)
         if not getattr(self, "_zoomed_once", False):
             self.timeline.zoom_to_fit()
             self._zoomed_once = True
 
     def _rebuild_media(self) -> None:
-        """把所有片段的音频混成一条时间轴音频 —— 波形/频谱/BPM/播放全都基于它。"""
+        """把音频轨片段混成一条播放音频；每条音频仍有自己的波形/BPM/频谱。"""
         clips = self.doc.project.clips
         sr = 48000
-        total = max(1000.0, self._video_len())
+        ends = []
+        for c in clips:
+            dur = float(c.duration_ms)
+            if dur <= 0:
+                got = self._media_cache.get(c.path)
+                if got is not None:
+                    dur = got[0].shape[0] * 1000.0 / max(1, got[1])
+            ends.append(c.offset_ms + max(0.0, dur))
+        total = max(1000.0, max(ends, default=0.0))
         n = int(total / 1000.0 * sr) + 1
         mix = np.zeros((n, 2), dtype=np.float32)
         any_audio = False
-        for c in clips:
-            if not c.has_audio:          # 无声视频/已标记无音轨的片段不要重复混音
+        for c in self.doc.project.audio_clips:
+            if not c.has_audio:
                 continue
             got = self._media_cache.get(c.path)
             if got is None:
@@ -1018,19 +1172,39 @@ class MainWindow(QMainWindow):
             np.clip(mix, -1.0, 1.0, out=mix)
         self.engine.samples = mix if any_audio else None
         self.engine.sr = sr
-        self.engine.path = clips[0].path if clips else ""
+        self.engine.path = self.doc.project.audio_clips[0].path if self.doc.project.audio_clips else ""
         self.engine.duration_ms = mix.shape[0] * 1000.0 / sr
         self.engine._rebuild()
         self._peaks = peaks(mix, PEAK_BUCKETS) if any_audio else None
-        self.timeline.set_audio(self._peaks, max(self.engine.duration_ms, self._video_len()))
-        clip_items = [(c, self._films.get(c.path) if c.kind == "video" else None)
-                      for c in clips]
+        self.timeline.set_audio(self._peaks, max(self.engine.duration_ms,
+                                                 self.doc.project.media_end_ms()))
+
+        # 每个音频片段准备自己的缩略波形；视频片段带胶片条
+        clip_items = []
+        video_items = []
+        for c in clips:
+            if c.kind == "video":
+                fs = self._films.get(c.path)
+                clip_items.append((c, fs))
+                video_items.append((c, fs))
+            else:
+                got = self._media_cache.get(c.path)
+                pk = None
+                if got is not None:
+                    samples, csr = got
+                    s0 = int(c.src_start_ms / 1000.0 * csr)
+                    take = c.duration_ms or (samples.shape[0] / csr * 1000.0 - c.src_start_ms)
+                    seg = samples[s0: s0 + int(take / 1000.0 * csr)]
+                    if seg.size:
+                        pk = peaks(seg, 3000)
+                clip_items.append((c, pk))
         self.timeline.set_clips(clip_items)
         self.spectrum.set_audio(mix if any_audio else None, sr)
-        self.refvideo.set_clips(clip_items, self.settings.ffmpeg)
+        self.refvideo.set_clips(video_items, self.settings.ffmpeg)
+        self._clip_specs = {}
         self.spec = None
         self._spec_token += 1
-        self.timeline.set_spectrogram(None)
+        self.timeline.clear_spectrograms()
         if any_audio and self.a_spec.isChecked():
             QTimer.singleShot(120, self.start_spectrogram)
         self._update_duration()
@@ -1074,10 +1248,17 @@ class MainWindow(QMainWindow):
         if force or now - self._last_status > 0.06:
             self._last_status = now
             self.lbl_pos.setText(fmt_time(pos))
-            tm = self.doc.project.chart.timemap
-            b = tm.beat(pos)
-            self.lbl_beat.setText(i18n.trf("拍 {b:.2f}（第 {n} 拍）", b=b, n=int(b // 1) + 1))
-            self.lbl_bpm.setText(f"{tm.bpm_at(pos):g} BPM")
+            clip = self.doc.project.audio_clip_at(pos)
+            if clip is None and self.doc.project.audio_clips:
+                self.lbl_beat.setText(i18n.tr("空档（无节拍）"))
+                self.lbl_bpm.setText("—")
+            else:
+                tm = (clip.timemap if clip is not None
+                      else self.doc.project.chart.timemap)
+                src = clip.timeline_to_source(pos) if clip is not None else pos
+                b = tm.beat(src)
+                self.lbl_beat.setText(i18n.trf("拍 {b:.2f}（第 {n} 拍）", b=b, n=int(b // 1) + 1))
+                self.lbl_bpm.setText(f"{tm.bpm_at(src):g} BPM")
             dur = self.engine.duration_ms
             if dur > 0 and not self._dragging_pos:
                 self.slider_pos.blockSignals(True)
@@ -1142,14 +1323,22 @@ class MainWindow(QMainWindow):
             return
         self._last_tap_at = now
         pos = self.position_ms
+        clip = self.doc.project.audio_clip_at(pos)
+        if clip is None and self.doc.project.audio_clips:
+            self.statusBar().showMessage(i18n.tr("空档不能打点：先放到某段音频上"), 1500)
+            return
         st = self.doc.state
         if st.tap_quantize and st.snap_on:
-            pos = self.doc.project.chart.timemap.snap(pos, st.snap_divisor)
+            if clip is not None:
+                src = clip.timeline_to_source(pos)
+                pos = clip.source_to_timeline(clip.timemap.snap(src, st.snap_divisor))
+            else:
+                pos = self.doc.project.chart.timemap.snap(pos, st.snap_divisor)
         rows = self.doc.project.theme.active_rows()
         if not rows:
             return
         lane = max(0, min(len(rows) - 1, st.current_lane))
-        nn = Note(pos, rows[lane], lane)
+        nn = Note(pos, rows[lane], lane, clip_id=clip.id if clip else "")
         self.doc.edit("打点", lambda: self.doc.project.chart.add(nn))
         self.doc.set_selection([nn])
         self.statusBar().showMessage(i18n.trf("打点 @ {t}", t=fmt_time(pos)), 1200)
@@ -1198,12 +1387,19 @@ class MainWindow(QMainWindow):
             for d, crow in zip(self._clipboard, clip_rows):
                 n = Note.from_dict(d)
                 n.t = max(0.0, base + (n.t - self._clip_anchor))
+                owner = self.doc.project.audio_clip_at(n.t)
+                if owner is None and self.doc.project.audio_clips:
+                    continue
+                n.clip_id = owner.id if owner is not None else ""
                 if at_row is not None and rows:
                     n.lane = max(0, min(len(rows) - 1, crow + d_row))
                     n.type = rows[n.lane]
                 added.append(n)
 
         fn()
+        if not added:
+            self.statusBar().showMessage(i18n.tr("空档不能粘贴：目标位置没有音频片段"), 2000)
+            return
         self.doc.project.chart.add_many(added)      # 一次排序，别逐个 add
         self.doc.commit_external("粘贴", before)
         self.doc.set_selection(added)
@@ -1214,15 +1410,26 @@ class MainWindow(QMainWindow):
         sel = sorted(self.doc.selection, key=lambda n: n.t)
         if not sel:
             return
-        tm = self.doc.project.chart.timemap
-        b0 = tm.beat(sel[0].t)
-        b1 = tm.beat(max(n.end for n in sel))
+        clip = self.doc.project.clip_by_id(sel[0].clip_id) or self.doc.project.audio_clip_at(sel[0].t)
+        if clip is None and self.doc.project.audio_clips:
+            return
+        if clip is not None:
+            tm = clip.timemap
+            b0 = tm.beat(clip.timeline_to_source(sel[0].t))
+            b1 = tm.beat(clip.timeline_to_source(max(n.end for n in sel)))
+        else:
+            tm = self.doc.project.chart.timemap
+            b0, b1 = tm.beat(sel[0].t), tm.beat(max(n.end for n in sel))
         bar = 4.0
         span = max(1.0, b1 - b0)                 # 至少一个整拍
         if span > bar:
             # 向上取整到整小节：向下取整会让长选区复制后和原选区重叠
             span = math.ceil(span / bar - 1e-9) * bar
-        delta = tm.ms(b0 + span) - tm.ms(b0)
+        if clip is not None:
+            delta = (clip.source_to_timeline(tm.ms(b0 + span))
+                     - clip.source_to_timeline(tm.ms(b0)))
+        else:
+            delta = tm.ms(b0 + span) - tm.ms(b0)
         added = []
         before = self.doc.snapshot()
 
@@ -1230,9 +1437,15 @@ class MainWindow(QMainWindow):
             for n in sel:
                 c = copy.deepcopy(n)
                 c.t += delta
+                owner = self.doc.project.audio_clip_at(c.t)
+                if owner is None:
+                    continue
+                c.clip_id = owner.id
                 added.append(c)
 
         fn()
+        if not added:
+            return
         self.doc.project.chart.add_many(added)
         self.doc.commit_external("向后复制", before)
         self.doc.set_selection(added)
@@ -1242,11 +1455,16 @@ class MainWindow(QMainWindow):
         if not self.doc.selection:
             return
         st = self.doc.state
-        tm = self.doc.project.chart.timemap
 
         def fn():
             for n in self.doc.selection:
-                n.t = tm.snap(n.t, st.snap_divisor)
+                clip = (self.doc.project.clip_by_id(n.clip_id)
+                        or self.doc.project.audio_clip_at(n.t))
+                if clip is not None:
+                    src = clip.timeline_to_source(n.t)
+                    n.t = clip.source_to_timeline(clip.timemap.snap(src, st.snap_divisor))
+                elif not self.doc.project.audio_clips:
+                    n.t = self.doc.project.chart.timemap.snap(n.t, st.snap_divisor)
 
         self.doc.edit("量化", fn)
         self.on_notes_changed()
@@ -1260,6 +1478,10 @@ class MainWindow(QMainWindow):
         def fn():
             for n in self.doc.selection:
                 n.t = t0 + (t1 - n.end)
+                if self.doc.project.audio_clips:
+                    owner = self.doc.project.audio_clip_at(n.t)
+                    if owner is not None:
+                        n.clip_id = owner.id
 
         self.doc.edit("镜像", fn)
         self.on_notes_changed()
@@ -1314,7 +1536,16 @@ class MainWindow(QMainWindow):
         """
         chart = self.doc.project.chart
         st = self.doc.state
-        dur = self.engine.duration_ms
+        clip = self._target_audio_clip()
+        # 填充以框选/播放头所在的片段为准；选中的如果不是这一段，就让位
+        probe = st.sel_t0 if st.has_range() else self.position_ms
+        at_probe = self.doc.project.audio_clip_at(probe)
+        if at_probe is not None and (clip is None or not clip.contains_time(probe)):
+            clip = at_probe
+        if clip is None and self.doc.project.audio_clips:
+            self._info("先选片段", "先在音频轨点击选中一段音频，再填充音符。")
+            return
+        dur = clip.end_ms() if clip is not None else (self.engine.duration_ms or 0.0)
         locked = False
         if start is not None:
             t0 = float(start)
@@ -1330,11 +1561,27 @@ class MainWindow(QMainWindow):
             t0, t1 = chart.bounds()
         else:
             t0, t1 = 0.0, (dur or 8000.0)
+        if clip is not None:
+            t0 = max(t0, clip.offset_ms)
+            t1 = min(t1, clip.end_ms())
+        if t1 - t0 < 20.0:
+            self._info("区间不在片段内", "框选/播放头要落在选中的音频片段里。")
+            return
         rows = [(k, self.doc.project.theme.style(k).name) for k in self.doc.project.theme.active_rows()]
         if not rows:
             return
-        dlg = FillRangeDialog(self, chart.timemap, t0, t1, rows, st.current_lane,
-                              st.snap_on, st.snap_divisor, dur, locked=locked, state=st)
+        # 对话框用“时间轴时间”展示；片段 timemap 平移到总时间轴
+        from ..timing import BpmSegment, TimeMap
+        if clip is not None:
+            tm_ui = TimeMap(
+                [BpmSegment(clip.source_to_timeline(s.time_ms), s.bpm)
+                 for s in clip.timemap.segments],
+                clip.source_to_timeline(clip.timemap.offset_ms))
+        else:
+            tm_ui = chart.timemap
+        dlg = FillRangeDialog(self, tm_ui, t0, t1, rows, st.current_lane,
+                              st.snap_on, st.snap_divisor, dur or t1,
+                              locked=locked, state=st)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         dlg.remember()
@@ -1349,6 +1596,13 @@ class MainWindow(QMainWindow):
         new_notes: list[Note] = []
         seen: set[tuple[float, int]] = set()
         for i, t in enumerate(times):
+            owner = self.doc.project.audio_clip_at(t)
+            if clip is not None:
+                if not clip.contains_time(t):
+                    continue
+                owner = clip
+            elif self.doc.project.audio_clips and owner is None:
+                continue
             k = keys[i % len(keys)]
             lane = lane_of.get(k, 0)
             key = (round(float(t), 3), lane)
@@ -1357,7 +1611,7 @@ class MainWindow(QMainWindow):
             seen.add(key)
             if chart.find_at(t, lane, 0.5) is not None:
                 continue
-            new_notes.append(Note(t, k, lane))
+            new_notes.append(Note(t, k, lane, clip_id=owner.id if owner else ""))
         chart.add_many(new_notes)
         self.doc.commit_external("区间填充", before)
         self.on_notes_changed()
@@ -1420,56 +1674,97 @@ class MainWindow(QMainWindow):
 
     # ================================================================ BPM
     def edit_bpm_segment(self, idx: int) -> None:
-        segs = self.doc.project.chart.timemap.segments
+        clip = self._target_audio_clip()
+        if clip is None:
+            self._info("先选片段", "先在音频轨点击选中一段音频。")
+            return
+        segs = clip.timemap.segments
         if not (0 <= idx < len(segs)):
             return
-        dlg = BpmSegmentDialog(self, segs[idx].time_ms, segs[idx].bpm, first=(idx == 0))
+        abs_t = clip.source_to_timeline(segs[idx].time_ms)
+        dlg = BpmSegmentDialog(self, abs_t, segs[idx].bpm, first=(idx == 0))
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         t, bpm = dlg.values()
-        before = self.doc.snapshot()
-        segs = list(self.doc.project.chart.timemap.segments)
-        segs[idx] = BpmSegment(t if idx > 0 else segs[0].time_ms, bpm)
-        self.doc.project.chart.set_segments(segs, self.doc.project.chart.offset_ms)
+        before = self.doc.snapshot(include_clips=True)
+        segs = list(clip.timemap.segments)
+        src = clip.timeline_to_source(t)
+        segs[idx] = BpmSegment(src if idx > 0 else segs[0].time_ms, bpm)
+        clip.timemap.set_segments(segs, clip.timemap.offset_ms)
         self.doc.commit_external("修改 BPM 段", before)
         self.on_chart_changed()
         self.panel_chart.refresh()
 
     def add_bpm_segment_at(self, ms: float) -> None:
-        segs = self.doc.project.chart.timemap.segments
+        clip = self._target_audio_clip()
+        if clip is None:
+            self._info("先选片段", "先在音频轨点击选中一段音频。")
+            return
+        if not clip.contains_time(ms):
+            self._info("位置不在片段内", "先把播放头放到选中的音频片段里。")
+            return
+        segs = clip.timemap.segments
         bpm = segs[-1].bpm if segs else 120.0
         dlg = BpmSegmentDialog(self, ms, bpm)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         t, b = dlg.values()
-        before = self.doc.snapshot()
-        self.doc.project.chart.add_segment(t, b)
+        before = self.doc.snapshot(include_clips=True)
+        src = clip.timeline_to_source(t)
+        segs = [s for s in list(clip.timemap.segments)
+                if abs(s.time_ms - src) > 1e-6]
+        segs.append(BpmSegment(src, b))
+        clip.timemap.set_segments(segs, clip.timemap.offset_ms)
         self.doc.commit_external("添加 BPM 段", before)
         self.on_chart_changed()
         self.panel_chart.refresh()
 
     def tap_tempo_dialog(self) -> None:
-        cur = self.doc.project.chart.timemap.bpm_at(self.position_ms)
+        clip = self._target_audio_clip()
+        if clip is None:
+            self._info("先选片段", "先在音频轨点击选中一段音频。")
+            return
+        src = clip.timeline_to_source(self.position_ms)
+        cur = clip.timemap.bpm_at(src)
+        if not clip.contains_time(self.position_ms):
+            self._info("位置不在片段内", "先把播放头放到选中的音频片段里。")
+            return
         dlg = TapTempoDialog(self, cur)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         bpm = round(dlg.bpm, 3)
-        before = self.doc.snapshot()
-        self.doc.project.chart.add_segment(self.position_ms, bpm)
+        before = self.doc.snapshot(include_clips=True)
+        segs = [s for s in list(clip.timemap.segments)
+                if abs(s.time_ms - src) > 1e-6]
+        segs.append(BpmSegment(src, bpm))
+        clip.timemap.set_segments(segs, clip.timemap.offset_ms)
         self.doc.commit_external("Tap 测速", before)
         self.on_chart_changed()
         self.panel_chart.refresh()
-        self.statusBar().showMessage(i18n.trf("已在播放头插入 {bpm:g} BPM 段", bpm=bpm), 4000)
+        self.statusBar().showMessage(i18n.trf("已在片段内插入 {bpm:g} BPM 段", bpm=bpm), 4000)
 
     def auto_bpm(self) -> None:
-        if self.engine.samples is None:
-            self._info("没有音频", "请先载入音频。")
+        clip = self._target_audio_clip()
+        if clip is None:
+            self._info("先选片段", "先在音频轨点击选中一段音频。")
             return
-        self.statusBar().showMessage(i18n.tr("正在分析 BPM…"))
+        got = self._media_cache.get(clip.path)
+        if got is None:
+            self._info("没有音频", "这段音频还没有解码，等媒体加载完再试。")
+            return
+        samples, sr = got
+        s0 = int(clip.src_start_ms / 1000.0 * sr)
+        take = clip.duration_ms or (samples.shape[0] / sr * 1000.0 - clip.src_start_ms)
+        seg = samples[s0: s0 + int(take / 1000.0 * sr)]
+        if seg.size == 0:
+            self._info("没有音频", "这段片段里没有可分析的音频。")
+            return
+        self._auto_target_clip_id = clip.id
+        self.statusBar().showMessage(i18n.tr("正在分析选中片段的 BPM…"))
 
         def work():
-            bpm, conf = estimate_bpm(self.engine.samples, self.engine.sr)
-            off = estimate_offset(self.engine.samples, bpm, self.engine.sr) if bpm else 0.0
+            bpm, conf = estimate_bpm(seg, sr)
+            off = estimate_offset(seg, bpm, sr) if bpm else 0.0
             return bpm, conf, off
 
         task = Task(work, parent=self)
@@ -1479,23 +1774,35 @@ class MainWindow(QMainWindow):
 
     def _auto_bpm_done(self, res) -> None:
         bpm, conf, off = res
+        clip = self.doc.project.clip_by_id(getattr(self, "_auto_target_clip_id", ""))
+        if clip is None:
+            return
         if bpm <= 0:
             self._info("没测出来", "没能估计出 BPM，可以用 Tap 测速手动打。")
             return
         msg = i18n.trf(
             "估计 BPM：{bpm:.2f}（置信度 {conf:.0f}%）\n建议节拍偏移：{off:.1f} ms\n\n"
-            "「是」= 整首统一用这个 BPM 并设好偏移\n「否」= 只在播放头插入这个 BPM 段",
+            "「是」= 这一段统一用这个 BPM 并设好偏移\n「否」= 只在播放头插入这个 BPM 段",
             bpm=bpm, conf=conf * 100, off=off)
         r = QMessageBox.question(self, i18n.tr("自动检测 BPM"), msg,
                                  QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel) if not self.silent \
             else QMessageBox.Yes
         if r == QMessageBox.Cancel:
             return
-        before = self.doc.snapshot()
+        if r == QMessageBox.No and not clip.contains_time(self.position_ms):
+            self._info("位置不在片段内", "先把播放头放到选中的音频片段里。")
+            return
+        before = self.doc.snapshot(include_clips=True)
+        base_src = clip.src_start_ms
         if r == QMessageBox.Yes:
-            self.doc.project.chart.set_segments([BpmSegment(off, bpm)], off)
+            src_off = base_src + off
+            clip.timemap.set_segments([BpmSegment(src_off, bpm)], src_off)
         else:
-            self.doc.project.chart.add_segment(self.position_ms, bpm)
+            src = clip.timeline_to_source(self.position_ms)
+            segs = [s for s in list(clip.timemap.segments)
+                    if abs(s.time_ms - src) > 1e-6]
+            segs.append(BpmSegment(src, bpm))
+            clip.timemap.set_segments(segs, clip.timemap.offset_ms)
         self.doc.commit_external("自动 BPM", before)
         self.on_chart_changed()
         self.panel_chart.refresh()
@@ -1514,9 +1821,11 @@ class MainWindow(QMainWindow):
         self.engine.clear()
         self._peaks = None
         self.spec = None
+        self._clip_specs = {}
         self._spec_task = None
         self._spec_token += 1
         self._media_busy = False
+        self.doc.state.selected_clip_id = ""
         self.spectrum.set_audio(None, 48000)
         self.timeline.set_spectrogram(None)
         self._media_cache.clear()
@@ -1962,20 +2271,26 @@ class MainWindow(QMainWindow):
             self, "用法与快捷键",
             "【最快上手流程】\n"
             "1. 把 mp3/wav 拖进窗口（或 Ctrl+Shift+O）\n"
-            "2. 空格播放，跟着音乐按 F 打点；或点「自动检测 BPM」\n"
-            "3. 整段铺点也可以用「工具 → 区间批量填充音符」按固定间隔一次填满\n"
-            "4. 有画面要卡：Ctrl+Shift+V 导入参考视频（视频自带声音的话会自动拿来当音频，\n"
-            "   波形/频谱/自动 BPM 都基于它）；时间轴会多出胶片条和频谱图\n"
+            "2. 在音频轨点击一段，选中后空格播放，跟着音乐按 F 打点；或点「自动检测 BPM」\n"
+            "3. 区间铺点用「工具 → 区间批量填充音符」，只填当前片段/框选所在的片段\n"
+            "4. 有画面要卡：Ctrl+Shift+V 导入参考视频（画面进视频轨，声音自动拆到音频轨并链接）；\n"
+            "   时间轴会多出视频轨、音频波形轨和该片段的频谱图\n"
             "5. Ctrl+E 导出透明视频，拖进剪辑软件放在原视频上层\n\n"
+            "【多段媒体（剪辑式）】\n"
+            "  视频轨 / 音频轨各自拖动，片段之间可以留空；视频和分离音频默认链接。\n"
+            "  拖动片段自动吸附播放头和相邻片段首尾，按住 Alt 临时关吸附。\n"
+            "  右键片段：在播放头切分 / 删除；Ctrl+K 切分，Del 删除（没有音符选中时）。\n"
+            "  片段之间空档没有网格、没有音符，也不能打点/添加音符。\n\n"
             "【判定点】\n"
             "  中间常驻一枚 45° 灰白菱形；音符打到它时按该音符颜色闪一下。\n"
             "  颜色/大小/闪烁时长都在「外观 → 判定点」里调。\n\n"
             "【对音：波形 + 频谱】\n"
-            "  时间轴从下到上是：音符行 / 视频胶片条 / 频谱图 / 波形。\n"
+            "  时间轴从上到下是：音符行 / 视频轨 / 音频轨（波形）/ 频谱图。\n"
+            "  每段音频有自己的 BPM、偏移、网格、波形和频谱；先选中片段再对音。\n"
             "  频谱图是对音主力：鼓点、音头都是频谱里的一条竖纹，\n"
-            "  把节拍网格线（可拖 BPM 段边界）跟竖纹对齐就准了。\n"
+            "  把该片段的节拍网格线跟竖纹对齐就准了。\n"
             "  左下角还有实时频谱条，播放时能看当前频段能量。\n"
-            "  视图菜单里可分别开关频谱图 / 实时频谱 / 胶片条。\n\n"
+            "  视图菜单里可分别开关频谱图 / 实时频谱 / 视频轨。\n\n"
             "【三种鼠标模式（V / B / R / Tab 切换）】\n"
             "  选择拖拽：空白拖动=框选音符；拖音符=移动；拖右侧把手=变长条\n"
             "  放置音符：单击=加点；按住拖动=沿网格连续刷（一次撤销）\n"
@@ -1991,7 +2306,7 @@ class MainWindow(QMainWindow):
             "  Ctrl+滚轮 = 缩放；Shift+滚轮 = 平移；中键拖动 = 平移\n\n"
             "【快捷键】\n"
             "  空格 播放/暂停　F 打点　V/B/R 鼠标模式　Tab 切换模式\n"
-            "  Ctrl+Z/Y 撤销/重做　Del 删除\n"
+            "  Ctrl+Z/Y 撤销/重做　Del 删除音符/片段　Ctrl+K 切分片段\n"
             "  Ctrl+A 全选　Ctrl+C/V 复制/粘贴到鼠标位置　Ctrl+D 向后复制\n"
             "  数字 1~9 切换音符类型　Q/W 上下换行　L 设循环　M 节拍器\n"
             "  Ctrl+0 缩放适应　Ctrl+E 导出视频　Ctrl+Shift+E 导出当前帧 PNG\n"
@@ -2038,7 +2353,13 @@ class MainWindow(QMainWindow):
             self.set_tool("range")
             return
         if k == Qt.Key_Delete or k == Qt.Key_Backspace:
-            self.delete_selection()
+            if self.doc.selection:
+                self.delete_selection()
+            elif self._selected_clip() is not None:
+                self.delete_selected_clip()
+            return
+        if k == Qt.Key_K and mods & Qt.ControlModifier:
+            self.split_selected_clip()
             return
         if Qt.Key_1 <= k <= Qt.Key_9 and not mods:
             idx = k - Qt.Key_1

@@ -18,6 +18,7 @@ class EditorState:
     snap_on: bool = True
     snap_divisor: float = 4.0        # 每拍切多少格；4 = 十六分音符
     current_lane: int = 0            # 当前绘制的行
+    selected_clip_id: str = ""        # 选中的媒体片段（BPM/偏移/切分目标）
     tool: str = "select"             # select = 选择/拖拽；draw = 放置音符；range = 框选区间
     loop_on: bool = False
     loop_a: float = 0.0
@@ -68,16 +69,20 @@ class Doc(QObject):
         self._pending: dict | None = None
 
     # ------------------------------------------------------------- 撤销
-    def snapshot(self, include_theme: bool = False) -> dict:
+    def snapshot(self, include_theme: bool = False,
+                 include_clips: bool = False) -> dict:
         """只快照谱面（默认）。
 
         外观/导出/媒体片段是“非撤销式”的状态：如果整份 Project 都进快照，
         撤销一个音符会把这些东西一起回滚（甚至删掉刚导入的媒体）。
-        只有明确需要“连外观结构一起撤销”的操作（如删除音符类型）才带上 theme。
+        只有明确需要“连外观结构一起撤销”的操作（如删除音符类型）才带上 theme；
+        片段拖动/切分/导入用 include_clips=True。
         """
         snap: dict = {"chart": copy.deepcopy(self.project.chart.to_dict())}
         if include_theme:
             snap["theme"] = copy.deepcopy(self.project.theme.to_dict())
+        if include_clips:
+            snap["clips"] = copy.deepcopy([c.to_dict() for c in self.project.clips])
         return snap
 
     def _restore(self, snap: dict) -> None:
@@ -85,13 +90,20 @@ class Doc(QObject):
         self.project.chart.timemap = chart.timemap
         self.project.chart.notes = chart.notes
         self.project.chart.sort()
+        if "clips" in snap:
+            from .model import MediaClip
+            self.project.clips = [MediaClip.from_dict(x) for x in snap["clips"]]
+            ids = {c.id for c in self.project.clips}
+            if self.state.selected_clip_id not in ids:
+                self.state.selected_clip_id = ""
         if "theme" in snap:
             self.project.theme = Theme.from_dict(snap["theme"])
         self.selection.clear()
         self._mark_dirty(True)
         self.changed.emit("撤销")
         self.selectionChanged.emit()
-        self.audioNeedsReload.emit()
+        if "clips" in snap:
+            self.audioNeedsReload.emit()
 
     def undo(self) -> None:
         r = self.undo_stack.undo()
@@ -109,30 +121,32 @@ class Doc(QObject):
     def can_redo(self) -> bool:
         return self.undo_stack.can_redo()
 
-    def edit(self, label: str, fn, *, emit: bool = True, include_theme: bool = False) -> None:
+    def edit(self, label: str, fn, *, emit: bool = True, include_theme: bool = False,
+             include_clips: bool = False) -> None:
         """立即执行一次可撤销的修改。
 
         include_theme=True 用于“删音符类型”这种同时改谱面与 theme 的操作；
         普通音符/时间编辑不要带 theme，否则撤销会顺手回滚外观。
         """
-        before = self.snapshot(include_theme)
+        before = self.snapshot(include_theme, include_clips)
         fn()
         self.project.chart.sort()
-        after = self.snapshot(include_theme)
+        after = self.snapshot(include_theme, include_clips)
         self.undo_stack.push(label, before, after)
         self._mark_dirty(True)
         if emit:
             self.changed.emit(label)
 
     # 拖动等连续操作：按下时 begin()，松开时 commit()
-    def begin(self) -> None:
-        self._pending = self.snapshot()
+    def begin(self, include_clips: bool = False) -> None:
+        self._pending = self.snapshot(include_clips=include_clips)
 
     def commit(self, label: str) -> None:
         if self._pending is None:
             return
         before, self._pending = self._pending, None
-        after = self.snapshot()
+        include_clips = "clips" in before
+        after = self.snapshot(include_clips=include_clips)
         if before == after:
             return
         self.undo_stack.push(label, before, after)
@@ -145,7 +159,8 @@ class Doc(QObject):
     def commit_external(self, label: str, before: dict) -> None:
         """外部（对话框/批量操作）已经改完数据后统一收尾：记撤销 + 标脏 + 通知。"""
         self.project.chart.sort()
-        self.undo_stack.push(label, before, self.snapshot("theme" in before))
+        self.undo_stack.push(label, before, self.snapshot(
+            "theme" in before, "clips" in before))
         self._mark_dirty(True)
         self.changed.emit(label)
 

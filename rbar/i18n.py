@@ -336,6 +336,74 @@ _TABLE: dict[str, tuple[str, str]] = {
         "Click “Download update” to get it from GitHub."),
     "发布附件：{names}": ("リリース添付：{names}", "Release assets: {names}"),
     "已是最新版（v{ver}）。": ("最新版です（v{ver}）。", "You're up to date (v{ver})."),
+    "未选中媒体片段": ("メディアクリップが未選択", "No media clip selected"),
+    "已选中片段：{name}": ("選択中のクリップ：{name}", "Selected clip: {name}"),
+    "已选中片段：{name}（无音频）": (
+        "選択中のクリップ：{name}（音声なし）", "Selected clip: {name} (no audio)"),
+    "已切分片段：{name}": ("クリップを分割しました：{name}", "Split clip: {name}"),
+    "移动片段：{a} → {b}": ("クリップ移動：{a} → {b}", "Move clip: {a} → {b}"),
+    "片段重叠：换个位置（按住 Alt 可临时关吸附）": (
+        "クリップが重なっています。位置を変えてください（Alt でスナップ一時解除）。",
+        "Clips overlap; choose another position (hold Alt to disable snapping)."),
+    "在播放头切分片段": ("再生位置でクリップを分割", "Split clip at playhead"),
+    "删除片段": ("クリップを削除", "Delete clip"),
+    "空档不能添加音符": ("空白部分にはノーツを追加できません", "Cannot add notes in a gap"),
+    "空档不能打点：先放到某段音频上": (
+        "空白部分では打点できません。音声クリップの上に移動してください。",
+        "Cannot tap in a gap; move over an audio clip."),
+    "空档不能粘贴：目标位置没有音频片段": (
+        "空白部分には貼り付けできません（音声クリップがありません）。",
+        "Cannot paste in a gap (no audio clip there)."),
+    "空档（无节拍）": ("空白（拍なし）", "Gap (no beat)"),
+    "正在分析选中片段的 BPM…": ("選択クリップの BPM を分析中…", "Analyzing selected clip BPM…"),
+    "已在片段内插入 {bpm:g} BPM 段": (
+        "クリップ内に {bpm:g} BPM 区間を挿入しました",
+        "Inserted a {bpm:g} BPM segment in the clip"),
+    "未选中音频片段 —— 先在音频轨点击一段": (
+        "音声クリップが未選択 — 音声トラックのクリップをクリックしてください",
+        "No audio clip selected — click one on the audio track"),
+    "视频轨": ("映像トラック", "Video track"),
+    "音频轨": ("音声トラック", "Audio track"),
+    "片段：{name}（BPM/偏移只作用于这一段）": (
+        "クリップ：{name}（BPM/オフセットはこのクリップだけに適用）",
+        "Clip: {name} (BPM/offset applies to this clip only)"),
+    "把这一段设为同一个 BPM：": (
+        "このクリップ全体を同じ BPM に：", "Set this clip to one BPM:"),
+    "先选片段": ("先にクリップを選択", "Select a clip first"),
+    "先在视频轨或音频轨点击选中要切分的片段。": (
+        "分割するクリップを映像/音声トラックで選択してください。",
+        "Select the clip to split on the video or audio track."),
+    "切分位置无效": ("分割位置が無効", "Invalid split position"),
+    "把播放头移到片段内部再切分。": (
+        "再生位置をクリップの内側に移動してから分割してください。",
+        "Move the playhead inside the clip before splitting."),
+    "先在音频轨点击选中一段音频，再填充音符。": (
+        "先に音声トラックのクリップを選択してからノーツを配置してください。",
+        "Select an audio clip on the audio track before filling notes."),
+    "区间不在片段内": ("範囲がクリップ内にありません", "Range is outside the clip"),
+    "框选/播放头要落在选中的音频片段里。": (
+        "選択範囲/再生位置を選択中の音声クリップ内に置いてください。",
+        "Keep the selection/playhead inside the selected audio clip."),
+    "先在音频轨点击选中一段音频。": (
+        "先に音声トラックのクリップを選択してください。",
+        "Select an audio clip on the audio track first."),
+    "位置不在片段内": ("位置がクリップ内にありません", "Position is outside the clip"),
+    "先把播放头放到选中的音频片段里。": (
+        "再生位置を選択中の音声クリップ内に移動してください。",
+        "Move the playhead inside the selected audio clip."),
+    "这段音频还没有解码，等媒体加载完再试。": (
+        "この音声はまだデコードされていません。読み込み完了後にもう一度試してください。",
+        "This audio is not decoded yet; try again after loading finishes."),
+    "这段片段里没有可分析的音频。": (
+        "このクリップには分析できる音声がありません。",
+        "This clip has no analyzable audio."),
+    "估计 BPM：{bpm:.2f}（置信度 {conf:.0f}%）\n建议节拍偏移：{off:.1f} ms\n\n"
+    "「是」= 这一段统一用这个 BPM 并设好偏移\n「否」= 只在播放头插入这个 BPM 段": (
+        "推定 BPM：{bpm:.2f}（信頼度 {conf:.0f}%）\n推奨オフセット：{off:.1f} ms\n\n"
+        "「はい」= このクリップ全体をこの BPM に\n「いいえ」= 再生位置に BPM 区間を追加",
+        "Estimated BPM: {bpm:.2f} (confidence {conf:.0f}%)\n"
+        "Suggested offset: {off:.1f} ms\n\n"
+        "“Yes” = use this BPM for the whole clip\n“No” = insert a segment at the playhead"),
     "检查 GitHub 上有没有新版本": ("GitHub に新しい版がないか確認", "Check GitHub for a new version"),
     "打开 Releases 页面": ("Releases ページを開く", "Open the Releases page"),
     "也可以直接打开 Releases 页面手动看看。": (

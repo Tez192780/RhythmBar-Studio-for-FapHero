@@ -404,6 +404,10 @@ class ChartPanel(QWidget):
         # --- BPM 段
         box = QGroupBox("BPM 变速")
         v = QVBoxLayout(box)
+        self.lbl_clip = QLabel("未选中音频片段")
+        self.lbl_clip.setStyleSheet("color:#8b949e;")
+        self.lbl_clip.setWordWrap(True)
+        v.addWidget(self.lbl_clip)
         self.table = QTableWidget(0, 2)
         self.table.setHorizontalHeaderLabels(["起点 (ms)", "BPM"])
         self.table.verticalHeader().setVisible(False)
@@ -411,7 +415,6 @@ class ChartPanel(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setMaximumHeight(190)
         self.table.itemChanged.connect(self._on_cell)
-        row = self.table.selectionModel() if hasattr(self.table, "selectionModel") else None
         v.addWidget(self.table)
         btns = QHBoxLayout()
         b_add = QPushButton("在播放头添加段")
@@ -420,6 +423,7 @@ class ChartPanel(QWidget):
         b_add.clicked.connect(self.add_segment)
         b_del.clicked.connect(self.del_segment)
         b_reset.clicked.connect(self.unify_bpm)
+        self.b_add, self.b_del, self.b_reset = b_add, b_del, b_reset
         btns.addWidget(b_add)
         btns.addWidget(b_del)
         btns.addWidget(b_reset)
@@ -430,6 +434,7 @@ class ChartPanel(QWidget):
         b_auto = QPushButton("自动检测 BPM")
         b_tap.clicked.connect(self.tapRequested.emit)
         b_auto.clicked.connect(self.autoBpmRequested.emit)
+        self.b_tap, self.b_auto = b_tap, b_auto
         btns2.addWidget(b_tap)
         btns2.addWidget(b_auto)
         v.addLayout(btns2)
@@ -439,10 +444,10 @@ class ChartPanel(QWidget):
         box2 = QGroupBox("对齐")
         f2 = QFormLayout(box2)
         self.sp_offset = QDoubleSpinBox()
-        self.sp_offset.setRange(-60000, 60000)
+        self.sp_offset.setRange(-10_000_000, 10_000_000)
         self.sp_offset.setDecimals(1)
         self.sp_offset.setSuffix(" ms")
-        self.sp_offset.setToolTip("第 1 拍（beat 0）所在的时间；波形对不上网格时调它")
+        self.sp_offset.setToolTip("第 1 拍（beat 0）在时间轴上的位置；只作用于当前选中的音频片段")
         self.sp_offset.valueChanged.connect(self._apply_offset)
         f2.addRow("节拍偏移", _row(self.sp_offset, self._btn_offset_from_playhead()))
         self.cb_snap = QComboBox()
@@ -515,19 +520,55 @@ class ChartPanel(QWidget):
     def set_playhead(self, ms: float) -> None:
         self._playhead_ms = ms
 
+    def _clip(self):
+        """当前选中的音频片段；选中视频时用它链接的音频。"""
+        p = self.doc.project
+        c = p.clip_by_id(self.doc.state.selected_clip_id)
+        if c is None:
+            return None
+        if c.kind == "audio":
+            return c
+        for x in p.linked_clips(c):
+            if x.kind == "audio":
+                return x
+        return None
+
     # ---------------------------------------------------------------- 刷新
     def refresh(self) -> None:
         self._loading = True
-        segs = self.doc.project.chart.timemap.segments
-        self.table.setRowCount(len(segs))
-        for i, s in enumerate(segs):
-            it0 = QTableWidgetItem(f"{s.time_ms:.1f}")
-            it0.setFlags(it0.flags() & ~Qt.ItemIsEditable if i == 0 else it0.flags() | Qt.ItemIsEditable)
-            it1 = QTableWidgetItem(f"{s.bpm:g}")
-            self.table.setItem(i, 0, it0)
-            self.table.setItem(i, 1, it1)
+        clip = self._clip()
+        if clip is None:
+            self.lbl_clip.setText(tr("未选中音频片段 —— 先在音频轨点击一段"))
+            self.table.setRowCount(0)
+            self.table.setEnabled(False)
+            self.sp_offset.setValue(0.0)
+            self.sp_offset.setEnabled(False)
+            for b in (self.b_add, self.b_del, self.b_reset, self.b_tap, self.b_auto):
+                b.setEnabled(False)
+        else:
+            self.lbl_clip.setText(trf("片段：{name}（BPM/偏移只作用于这一段）",
+                                      name=clip.label))
+            tm = clip.timemap
+            segs = tm.segments
+            self.table.setEnabled(True)
+            self.table.setRowCount(len(segs))
+            for i, s in enumerate(segs):
+                t_abs = clip.source_to_timeline(s.time_ms)
+                it0 = QTableWidgetItem(f"{t_abs:.1f}")
+                it0.setFlags(it0.flags() & ~Qt.ItemIsEditable if i == 0
+                             else it0.flags() | Qt.ItemIsEditable)
+                it1 = QTableWidgetItem(f"{s.bpm:g}")
+                self.table.setItem(i, 0, it0)
+                self.table.setItem(i, 1, it1)
+            self.sp_offset.setEnabled(True)
+            self.sp_offset.setValue(clip.source_to_timeline(tm.offset_ms))
+            for b in (self.b_add, self.b_del, self.b_reset, self.b_tap, self.b_auto):
+                b.setEnabled(True)
         rs = self.doc.project.render
-        self.sp_offset.setValue(self.doc.project.chart.offset_ms)
+        self.sp_offset_and_render(rs)
+        self._loading = False
+
+    def sp_offset_and_render(self, rs) -> None:
         i = self.cb_flow.findData(rs.flow)
         self.cb_flow.setCurrentIndex(max(0, i))
         self.sl_approach.setValue(rs.approach_s)
@@ -542,14 +583,17 @@ class ChartPanel(QWidget):
         self.chk_snap.setChecked(self.doc.state.snap_on)
         j = self.cb_snap.findData(self.doc.state.snap_divisor)
         self.cb_snap.setCurrentIndex(max(0, j))
-        self._loading = False
 
     # ---------------------------------------------------------------- 编辑
     def _on_cell(self, item: QTableWidgetItem) -> None:
         if self._loading:
             return
+        clip = self._clip()
+        if clip is None:
+            self.refresh()
+            return
         i, col = item.row(), item.column()
-        segs = list(self.doc.project.chart.timemap.segments)
+        segs = list(clip.timemap.segments)
         if not (0 <= i < len(segs)):
             return
         try:
@@ -557,35 +601,50 @@ class ChartPanel(QWidget):
         except ValueError:
             self.refresh()
             return
-        before = self.doc.snapshot()
+        before = self.doc.snapshot(include_clips=True)
         if col == 0:
             if i == 0:
                 self.refresh()
                 return
-            segs[i].time_ms = max(segs[i - 1].time_ms + 1.0, val)
+            src = clip.timeline_to_source(val)
+            segs[i].time_ms = max(segs[i - 1].time_ms + 1.0, src)
         else:
             segs[i].bpm = max(1.0, min(1200.0, val))
-        self.doc.project.chart.set_segments(segs, self.doc.project.chart.offset_ms)
+        clip.timemap.set_segments(segs, clip.timemap.offset_ms)
         self.doc.commit_external("修改 BPM", before)
         self.refresh()
         self.changed.emit()
 
     def add_segment(self) -> None:
-        ms = self.snap(self._playhead_ms)
-        segs = self.doc.project.chart.timemap.segments
+        clip = self._clip()
+        if clip is None:
+            return
+        src = clip.timeline_to_source(self._playhead_ms)
+        if not clip.contains_time(self._playhead_ms):
+            return
+        src = clip.timemap.snap(src, self.doc.state.snap_divisor) if self.doc.state.snap_on else src
+        segs = list(clip.timemap.segments)
         bpm = segs[-1].bpm if segs else 120.0
-        before = self.doc.snapshot()
-        self.doc.project.chart.add_segment(ms, bpm)
+        before = self.doc.snapshot(include_clips=True)
+        segs = [s for s in segs if abs(s.time_ms - src) > 1e-6]
+        segs.append(BpmSegment(src, bpm))
+        clip.timemap.set_segments(segs, clip.timemap.offset_ms)
         self.doc.commit_external("添加 BPM 段", before)
         self.refresh()
         self.changed.emit()
 
     def del_segment(self) -> None:
+        clip = self._clip()
+        if clip is None:
+            return
         row = self.table.currentRow()
         if row <= 0:
             return
-        before = self.doc.snapshot()
-        self.doc.project.chart.remove_segment(row)
+        before = self.doc.snapshot(include_clips=True)
+        segs = list(clip.timemap.segments)
+        if 0 <= row < len(segs) and len(segs) > 1:
+            segs.pop(row)
+        clip.timemap.set_segments(segs, clip.timemap.offset_ms)
         self.doc.commit_external("删除 BPM 段", before)
         self.refresh()
         self.changed.emit()
@@ -593,26 +652,38 @@ class ChartPanel(QWidget):
     def unify_bpm(self) -> None:
         from PySide6.QtWidgets import QInputDialog
 
-        cur = self.doc.project.chart.timemap.segments[-1].bpm
-        bpm, ok = QInputDialog.getDouble(self, tr("统一 BPM"), tr("把整首曲子设为同一个 BPM："),
+        clip = self._clip()
+        if clip is None:
+            return
+        cur = clip.timemap.segments[-1].bpm if clip.timemap.segments else 120.0
+        bpm, ok = QInputDialog.getDouble(self, tr("统一 BPM"), tr("把这一段设为同一个 BPM："),
                                          cur, 1, 1200, 3)
         if not ok:
             return
-        before = self.doc.snapshot()
-        off = self.doc.project.chart.offset_ms
-        self.doc.project.chart.set_segments([BpmSegment(off, bpm)], off)
+        before = self.doc.snapshot(include_clips=True)
+        off = clip.timemap.offset_ms
+        clip.timemap.set_segments([BpmSegment(off, bpm)], off)
         self.doc.commit_external("统一 BPM", before)
         self.refresh()
         self.changed.emit()
 
     def snap(self, ms: float) -> float:
+        clip = self._clip()
         st = self.doc.state
-        return self.doc.project.chart.timemap.snap(ms, st.snap_divisor) if st.snap_on else ms
+        if clip is None or not st.snap_on:
+            return ms
+        src = clip.timeline_to_source(ms)
+        return clip.source_to_timeline(clip.timemap.snap(src, st.snap_divisor))
 
     def _apply_offset(self, v: float) -> None:
         if self._loading:
             return
-        self.doc.project.chart.set_offset(float(v))
+        clip = self._clip()
+        if clip is None:
+            return
+        src = clip.timeline_to_source(float(v))
+        segs = list(clip.timemap.segments)
+        clip.timemap.set_segments(segs, src)
         self.doc.touch("节拍偏移")
         self.changed.emit()
 
