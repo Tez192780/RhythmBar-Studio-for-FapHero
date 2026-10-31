@@ -1812,55 +1812,87 @@ class MainWindow(QMainWindow):
         """查 GitHub Releases 有没有新版本；auto=True 时静默失败、只在有更新时弹窗。"""
         if auto and not getattr(self.settings, "check_updates", True):
             return
-        if auto:
-            import time as _t
+        import time as _t
 
-            last = float(getattr(self.settings, "last_update_check", 0.0) or 0.0)
-            if _t.time() - last < 6 * 3600:       # 6 小时内不重复打扰 GitHub
+        now = _t.time()
+        if auto:
+            if now < float(getattr(self.settings, "update_snooze_until", 0.0) or 0.0):
                 return
+            last_ok = float(getattr(self.settings, "update_last_success", 0.0) or 0.0)
+            if last_ok and now - last_ok < 6 * 3600:
+                return
+            fails = int(getattr(self.settings, "update_fail_count", 0) or 0)
+            if fails:
+                # 失败退避：15 分钟、30 分钟、1 小时……最多 6 小时，避免一直打 GitHub
+                delay = min(6 * 3600, 15 * 60 * (2 ** min(fails - 1, 4)))
+                last_try = float(getattr(self.settings, "update_last_attempt", 0.0) or 0.0)
+                if now - last_try < delay:
+                    return
         if self._update_task is not None:
             return
         from ..updater import fetch_latest, is_newer
 
-        task = Task(fetch_latest, parent=self)
+        task = Task(fetch_latest, parent=self,
+                    current=__version__,
+                    etag=str(getattr(self.settings, "update_etag", "") or ""))
         self._update_task = task
         if not auto:
             self.statusBar().showMessage(i18n.tr("正在检查更新…"))
 
-        def stamp() -> None:
-            import time as _t
-
-            self.settings.last_update_check = _t.time()
+        def mark(success: bool, res: dict | None = None) -> None:
+            stamp = _t.time()
+            if success:
+                self.settings.update_last_success = stamp
+                self.settings.update_last_attempt = stamp
+                self.settings.update_fail_count = 0
+                if res and res.get("etag"):
+                    self.settings.update_etag = str(res["etag"])
+            else:
+                self.settings.update_last_attempt = stamp
+                self.settings.update_fail_count = int(
+                    getattr(self.settings, "update_fail_count", 0) or 0) + 1
+            self.settings.last_update_check = self.settings.update_last_success
             self.settings.save()
 
         def done(res) -> None:
             self._update_task = None
-            stamp()
+            mark(True, res)
             if not res or res.get("none"):
                 if not auto:
                     self._info("检查更新", "作者还没有发布任何 Release。\n（仓库一直在更新代码，可以关注 commit）")
                 return
+            if res.get("not_modified"):
+                if not auto:
+                    self._info("检查更新", i18n.trf(
+                        "已是最新版（v{ver}）。", ver=__version__))
+                return
             tag = str(res.get("tag", ""))
             if is_newer(tag, __version__):
+                if auto and tag == str(getattr(self.settings, "update_skip_version", "")
+                                       or ""):
+                    return
                 self._show_update_dialog(res)
             elif not auto:
-                self._info("检查更新", f"已是最新版（v{__version__}）。\n最新 Release：{tag or '—'}")
+                self._info("检查更新", i18n.trf(
+                    "已是最新版（v{ver}）。\n最新 Release：{tag}",
+                    ver=__version__, tag=tag or "—"))
 
         def failed(msg: str) -> None:
             self._update_task = None
-            stamp()                           # 失败也记时间，别一直重试
+            mark(False)
+            # 自动检查失败不打扰用户，但必须留下日志；否则会被误认为“检查更新坏了”
+            print(f"[检查更新失败] {msg}", flush=True)
             if auto:
-                return                        # 自动检查失败就静默，不打扰
+                return
             if self.silent:
-                print(f"[检查更新失败] {msg}", flush=True)
                 return
             box = QMessageBox(self)
-            box.setWindowTitle("检查更新失败")
+            box.setWindowTitle(i18n.tr("检查更新失败"))
             box.setIcon(QMessageBox.Warning)
             box.setText(str(msg))
-            box.setInformativeText("也可以直接打开 Releases 页面手动看看。")
-            b_open = box.addButton("打开 Releases 页面", QMessageBox.AcceptRole)
-            box.addButton("好", QMessageBox.RejectRole)
+            box.setInformativeText(i18n.tr("也可以直接打开 Releases 页面手动看看。"))
+            b_open = box.addButton(i18n.tr("打开 Releases 页面"), QMessageBox.AcceptRole)
+            box.addButton(i18n.tr("好"), QMessageBox.RejectRole)
             box.exec()
             if box.clickedButton() is b_open:
                 import webbrowser
@@ -1877,24 +1909,52 @@ class MainWindow(QMainWindow):
         if len(body) > 1000:
             body = body[:1000] + "…"
         assets = res.get("assets") or []
+        asset = next((a for a in assets
+                      if a.get("url") and str(a.get("name", "")).lower().endswith(
+                          (".zip", ".exe"))), None)
+        if asset is None:
+            asset = next((a for a in assets if a.get("url")), None)
+        download_url = (asset or {}).get("url") or res.get("download_url") or ""
         names = "、".join(a["name"] for a in assets[:5] if a.get("name"))
         if names:
-            body += f"\n\n发布附件：{names}"
+            body += "\n\n" + i18n.trf("发布附件：{names}", names=names)
         if self.silent:
             print(f"[发现新版本] {tag}\n{body}", flush=True)
             return
         box = QMessageBox(self)
-        box.setWindowTitle("发现新版本")
+        box.setWindowTitle(i18n.tr("发现新版本"))
         box.setIcon(QMessageBox.Information)
-        box.setText(f"有新版本可用：{tag}（当前 v{__version__}）")
-        box.setInformativeText(body or "点「打开下载页」到 GitHub 查看。")
-        b_open = box.addButton("打开下载页", QMessageBox.AcceptRole)
-        box.addButton("以后再说", QMessageBox.RejectRole)
+        box.setText(i18n.trf("有新版本可用：{tag}（当前 v{ver}）",
+                             tag=tag, ver=__version__))
+        box.setInformativeText(body or i18n.tr("点「下载更新」到 GitHub 下载。"))
+        b_download = box.addButton(
+            i18n.tr("下载更新") if download_url else i18n.tr("打开下载页"),
+            QMessageBox.AcceptRole)
+        b_skip = box.addButton(i18n.tr("跳过此版本"), QMessageBox.ActionRole)
+        b_page = None
+        if download_url:
+            b_page = box.addButton(i18n.tr("打开发布页"), QMessageBox.ActionRole)
+        b_later = box.addButton(i18n.tr("稍后提醒"), QMessageBox.RejectRole)
+        box.setDefaultButton(b_download)
         box.exec()
-        if box.clickedButton() is b_open:
+        clicked = box.clickedButton()
+        if clicked is b_download:
+            import webbrowser
+
+            webbrowser.open(download_url or res.get("url") or RELEASES_PAGE)
+        elif clicked is b_page:
             import webbrowser
 
             webbrowser.open(res.get("url") or RELEASES_PAGE)
+        elif clicked is b_skip:
+            self.settings.update_skip_version = tag
+            self.settings.update_snooze_until = 0.0
+            self.settings.save()
+        elif clicked is b_later:
+            import time as _t
+
+            self.settings.update_snooze_until = _t.time() + 24 * 3600
+            self.settings.save()
 
     # ================================================================ 帮助
     def show_help(self) -> None:

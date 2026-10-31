@@ -324,6 +324,18 @@ _TABLE: dict[str, tuple[str, str]] = {
     "发现新版本": ("新しいバージョンがあります", "New version available"),
     "打开下载页": ("ダウンロードページを開く", "Open download page"),
     "以后再说": ("後で", "Later"),
+    "下载更新": ("アップデートをダウンロード", "Download update"),
+    "打开发布页": ("リリースページを開く", "Open release page"),
+    "跳过此版本": ("このバージョンをスキップ", "Skip this version"),
+    "稍后提醒": ("後で通知", "Remind me later"),
+    "有新版本可用：{tag}（当前 v{ver}）": (
+        "新しいバージョンがあります：{tag}（現在 v{ver}）",
+        "New version available: {tag} (current v{ver})"),
+    "点「下载更新」到 GitHub 下载。": (
+        "「アップデートをダウンロード」から GitHub で取得できます。",
+        "Click “Download update” to get it from GitHub."),
+    "发布附件：{names}": ("リリース添付：{names}", "Release assets: {names}"),
+    "已是最新版（v{ver}）。": ("最新版です（v{ver}）。", "You're up to date (v{ver})."),
     "检查 GitHub 上有没有新版本": ("GitHub に新しい版がないか確認", "Check GitHub for a new version"),
     "打开 Releases 页面": ("Releases ページを開く", "Open the Releases page"),
     "也可以直接打开 Releases 页面手动看看。": (
@@ -439,9 +451,9 @@ _TABLE: dict[str, tuple[str, str]] = {
         "A/V calibration: if the picture lags the sound, decrease this."),
     "打点时两次点击小于这个间隔就忽略": (
         "この間隔より短い連続タップは無視します", "Ignore taps closer together than this"),
-    "启动约 2.5 秒后查一次 GitHub Release，6 小时内不重复": (
-        "起動約 2.5 秒後に GitHub Release を確認。6時間以内の再確認はしません。",
-        "Check GitHub Releases ~2.5s after startup; at most once per 6 hours."),
+    "启动约 2.5 秒后查一次 GitHub Release；成功后 6 小时内不重复，失败会稍后重试": (
+        "起動約 2.5 秒後に GitHub Release を確認。成功後 6 時間は再確認しません（失敗時は後で再試行）。",
+        "Check GitHub Releases ~2.5s after startup; after success at most once per 6 hours (failures retry later)."),
     "选择 ffmpeg.exe": ("ffmpeg.exe を選択", "Select ffmpeg.exe"),
     "选择 PNG 序列输出文件夹": ("PNG 連番の出力フォルダを選択", "Choose PNG sequence output folder"),
     "导出为": ("書き出し先", "Export as"),

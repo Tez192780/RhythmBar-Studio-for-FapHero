@@ -1129,7 +1129,8 @@ class SettingsPanel(QWidget):
         self.chk_safe.toggled.connect(self._apply)
         f.addRow("", self.chk_safe)
         self.chk_updates = QCheckBox("启动时检查更新")
-        self.chk_updates.setToolTip("启动约 2.5 秒后查一次 GitHub Release，6 小时内不重复")
+        self.chk_updates.setToolTip(
+            "启动约 2.5 秒后查一次 GitHub Release；成功后 6 小时内不重复，失败会稍后重试")
         self.chk_updates.toggled.connect(self._apply)
         f.addRow("", self.chk_updates)
         root.addWidget(box)

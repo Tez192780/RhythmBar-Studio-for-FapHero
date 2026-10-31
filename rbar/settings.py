@@ -39,7 +39,18 @@ class AppSettings:
         self.tap_min_ms: float = _as_float(g("tap_min_ms", 90.0), 90.0)
         self.language: str = str(g("language", "zh") or "zh")
         self.check_updates: bool = _as_bool(g("check_updates", "true"), True)
-        self.last_update_check: float = _as_float(g("last_update_check", 0.0), 0.0)
+        # 更新检查状态：success/attempt 分开，失败不再算“已检查”。
+        legacy = _as_float(g("last_update_check", 0.0), 0.0)
+        self.update_last_success: float = _as_float(
+            g("update_last_success", legacy), legacy)
+        self.update_last_attempt: float = _as_float(
+            g("update_last_attempt", legacy), legacy)
+        self.update_fail_count: int = int(_as_float(g("update_fail_count", 0), 0))
+        self.update_skip_version: str = str(g("update_skip_version", "") or "")
+        self.update_snooze_until: float = _as_float(
+            g("update_snooze_until", 0.0), 0.0)
+        self.update_etag: str = str(g("update_etag", "") or "")
+        self.last_update_check: float = self.update_last_success   # 旧字段兼容
         self.last_dir: str = str(g("last_dir", os.path.expanduser("~")) or "")
         recent = g("recent", [])
         if isinstance(recent, str):
@@ -82,8 +93,28 @@ class AppSettings:
         if "check_updates" in d:
             self.check_updates = _as_bool(d.get("check_updates"), self.check_updates)
         if "last_update_check" in d:
-            self.last_update_check = _as_float(d.get("last_update_check"),
-                                               self.last_update_check)
+            self.update_last_success = _as_float(
+                d.get("last_update_check"), self.update_last_success)
+            self.update_last_attempt = self.update_last_success
+            self.last_update_check = self.update_last_success
+        if "update_last_success" in d:
+            self.update_last_success = _as_float(
+                d.get("update_last_success"), self.update_last_success)
+        if "update_last_attempt" in d:
+            self.update_last_attempt = _as_float(
+                d.get("update_last_attempt"), self.update_last_attempt)
+        if "update_fail_count" in d:
+            try:
+                self.update_fail_count = max(0, int(d.get("update_fail_count") or 0))
+            except (TypeError, ValueError):
+                pass
+        if "update_skip_version" in d:
+            self.update_skip_version = str(d.get("update_skip_version") or "")
+        if "update_snooze_until" in d:
+            self.update_snooze_until = _as_float(
+                d.get("update_snooze_until"), self.update_snooze_until)
+        if "update_etag" in d:
+            self.update_etag = str(d.get("update_etag") or "")
         if "last_dir" in d:
             self.last_dir = str(d.get("last_dir") or self.last_dir)
         if "recent" in d:
@@ -105,7 +136,13 @@ class AppSettings:
             "tap_min_ms": self.tap_min_ms,
             "language": self.language,
             "check_updates": bool(self.check_updates),
-            "last_update_check": float(self.last_update_check),
+            "last_update_check": float(self.update_last_success),
+            "update_last_success": float(self.update_last_success),
+            "update_last_attempt": float(self.update_last_attempt),
+            "update_fail_count": int(self.update_fail_count),
+            "update_skip_version": self.update_skip_version,
+            "update_snooze_until": float(self.update_snooze_until),
+            "update_etag": self.update_etag,
             "last_dir": self.last_dir,
             "recent": self.recent[:12],
             "show_safe": bool(self.show_safe),
@@ -135,7 +172,13 @@ class AppSettings:
         s.setValue("tap_min_ms", self.tap_min_ms)
         s.setValue("language", self.language)
         s.setValue("check_updates", "true" if self.check_updates else "false")
-        s.setValue("last_update_check", float(self.last_update_check))
+        s.setValue("last_update_check", float(self.update_last_success))
+        s.setValue("update_last_success", float(self.update_last_success))
+        s.setValue("update_last_attempt", float(self.update_last_attempt))
+        s.setValue("update_fail_count", int(self.update_fail_count))
+        s.setValue("update_skip_version", self.update_skip_version)
+        s.setValue("update_snooze_until", float(self.update_snooze_until))
+        s.setValue("update_etag", self.update_etag)
         s.setValue("last_dir", self.last_dir)
         s.setValue("recent", self.recent[:12])
         s.setValue("show_safe", "true" if self.show_safe else "false")
