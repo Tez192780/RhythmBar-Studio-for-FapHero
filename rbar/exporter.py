@@ -21,7 +21,7 @@ from typing import Callable
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QImage, QPainter
 
-from .audio import find_ffmpeg
+from .audio import FFMPEG_NAME, find_ffmpeg
 from .model import Project
 from .render import BarRenderer
 
@@ -218,7 +218,7 @@ def export_video(
     ex = project.export
     ff = ffmpeg or find_ffmpeg()
     if not ff:
-        raise RuntimeError("找不到 ffmpeg.exe，请在「设置」里指定路径")
+        raise RuntimeError(f"找不到 {FFMPEG_NAME}，请在「设置」里指定路径")
 
     w = max(2, int(ex.width) - int(ex.width) % 2)
     h = max(2, int(ex.height) - int(ex.height) % 2)

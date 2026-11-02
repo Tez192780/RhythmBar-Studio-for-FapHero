@@ -268,6 +268,9 @@ _TABLE: dict[str, tuple[str, str]] = {
     "找不到 ffmpeg.exe，请在「设置」标签里指定路径。": (
         "ffmpeg.exe が見つかりません。「設定」タブでパスを指定してください。",
         "ffmpeg.exe not found. Set its path in the Settings tab."),
+    "找不到 ffmpeg，请在「设置」标签里指定路径。": (
+        "ffmpeg が見つかりません。「設定」タブでパスを指定してください。",
+        "ffmpeg not found. Set its path in the Settings tab."),
     "当前工程有未保存的改动，要保存吗？": (
         "保存されていない変更があります。保存しますか？",
         "You have unsaved changes. Save them?"),
@@ -527,6 +530,7 @@ _TABLE: dict[str, tuple[str, str]] = {
         "起動約 2.5 秒後に GitHub Release を確認。成功後 6 時間は再確認しません（失敗時は後で再試行）。",
         "Check GitHub Releases ~2.5s after startup; after success at most once per 6 hours (failures retry later)."),
     "选择 ffmpeg.exe": ("ffmpeg.exe を選択", "Select ffmpeg.exe"),
+    "选择 ffmpeg": ("ffmpeg を選択", "Select ffmpeg"),
     "选择 PNG 序列输出文件夹": ("PNG 連番の出力フォルダを選択", "Choose PNG sequence output folder"),
     "导出为": ("書き出し先", "Export as"),
     "不吸附": ("スナップなし", "No snapping"),
@@ -586,6 +590,9 @@ _TABLE: dict[str, tuple[str, str]] = {
     "没找到 ffmpeg.exe，请在「设置」标签里指定路径。": (
         "ffmpeg.exe が見つかりません。「設定」タブでパスを指定してください。",
         "ffmpeg.exe not found. Set its path in the Settings tab."),
+    "没找到 ffmpeg，请在「设置」标签里指定路径。": (
+        "ffmpeg が見つかりません。「設定」タブでパスを指定してください。",
+        "ffmpeg not found. Set its path in the Settings tab."),
     "这个文件没有声音": ("このファイルには音声がありません", "This file has no audio"),
     "请换一个音频文件。": ("別の音声ファイルを選んでください。", "Choose another audio file."),
     "还没有参考视频": ("参照映像がありません", "No reference video yet"),

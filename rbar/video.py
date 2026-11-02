@@ -15,7 +15,7 @@ from typing import Callable
 import numpy as np
 from PySide6.QtGui import QImage
 
-from .audio import find_ffmpeg, find_ffprobe
+from .audio import FFMPEG_NAME, find_ffmpeg, find_ffprobe
 
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
@@ -152,7 +152,7 @@ def extract_filmstrip(
     """一次 ffmpeg 解码出等间隔缩略图（大视频会花几秒，放到后台线程跑）。"""
     ff = ffmpeg or find_ffmpeg()
     if not ff:
-        raise RuntimeError("找不到 ffmpeg.exe")
+        raise RuntimeError(f"找不到 {FFMPEG_NAME}")
     info = info or probe_video(path, find_ffprobe(ff))
     dur_s = max(0.2, (info.duration_ms or 1000.0) / 1000.0)
     n_want = int(max(1, min(max_frames, round(dur_s * max(0.2, target_fps)))))
@@ -220,7 +220,7 @@ def decode_frame(path: str, t_ms: float, info: VideoInfo | None = None,
     """解码指定时刻的单帧（输入 seek，很快）。返回 (RGBA 数组, w, h)。"""
     ff = ffmpeg or find_ffmpeg()
     if not ff:
-        raise RuntimeError("找不到 ffmpeg.exe")
+        raise RuntimeError(f"找不到 {FFMPEG_NAME}")
     info = info or probe_video(path, find_ffprobe(ff))
     th = height
     src_w = max(1, info.width or 16)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
@@ -30,6 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..audio import FFMPEG_NAME
 from ..doc import Doc
 from ..exporter import estimate_size_mb
 from ..i18n import tr, trf
@@ -1233,7 +1236,10 @@ class SettingsPanel(QWidget):
         self._loading = False
 
     def _browse_ffmpeg(self) -> None:
-        p, _ = QFileDialog.getOpenFileName(self, tr("选择 ffmpeg.exe"), "", "ffmpeg (ffmpeg.exe)")
+        # macOS 的 ffmpeg 没有扩展名，原生对话框按扩展名过滤会选不中，
+        # 所以 Mac 上直接用「所有文件」。
+        flt = "ffmpeg (ffmpeg.exe);;所有文件 (*)" if os.name == "nt" else "所有文件 (*)"
+        p, _ = QFileDialog.getOpenFileName(self, tr(f"选择 {FFMPEG_NAME}"), "", flt)
         if p:
             self.ed_ffmpeg.setText(p)
             self._apply()

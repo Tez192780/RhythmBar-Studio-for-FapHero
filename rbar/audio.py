@@ -17,13 +17,16 @@ from PySide6.QtMultimedia import QAudio, QAudioFormat, QAudioSink, QMediaDevices
 
 DEFAULT_SR = 48000
 
+# 可执行文件名（提示文案/选择对话框用）：Windows 带 .exe，macOS/Linux 不带。
+FFMPEG_NAME = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+
 
 # --------------------------------------------------------------------- ffmpeg
 def find_ffmpeg() -> str:
     found = shutil.which("ffmpeg")
     if found:
         return found
-    exe = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+    exe = FFMPEG_NAME
     candidates = [
         r"C:\Program Files\FFmpeg\bin\ffmpeg.exe",
         r"C:\Program Files (x86)\FFmpeg\bin\ffmpeg.exe",
@@ -62,7 +65,7 @@ def decode_audio(path: str, sr: int = DEFAULT_SR, ffmpeg: str | None = None) -> 
     """解码成 float32。返回 (samples, sr)，samples 形状 (n,) 单声道或 (n,2) 立体声。"""
     ff = ffmpeg or find_ffmpeg()
     if not ff:
-        raise RuntimeError("找不到 ffmpeg.exe，请在「设置」里指定路径")
+        raise RuntimeError(f"找不到 {FFMPEG_NAME}，请在「设置」里指定路径")
     cmd = [
         ff, "-v", "error", "-nostdin", "-i", path,
         "-vn", "-sn", "-dn",

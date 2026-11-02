@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import html
 import json
+import os
+import platform
 import re
 import urllib.error
 import urllib.parse
@@ -27,6 +29,39 @@ PAGE = f"https://github.com/{REPO}/releases"
 UA = "RhythmBar-Studio-Updater"
 
 _PRERELEASE_RE = re.compile(r"(?i)(?:alpha|beta|rc|preview|pre|dev)\d*$")
+
+
+def _zip_platform_suffix() -> str:
+    """release 附件名里的平台后缀（和打包脚本的产物命名保持一致）：
+    Windows: RhythmBar-Studio-{tag}-win64.zip
+    macOS:   RhythmBar-Studio-{tag}-macOS-{arch}.zip
+    """
+    if os.name == "nt":
+        return "win64"
+    return f"macOS-{platform.machine().lower() or 'arm64'}"
+
+
+def pick_asset(assets: list[dict]) -> dict | None:
+    """在 release 附件里挑当前平台能用的那个（zip 优先）。
+
+    平台匹配不上时退回「任意 zip/exe」，再退回第一个附件（保持旧行为，
+    让用户至少能拿到下载链接）。
+    """
+    if not assets:
+        return None
+    names = [str(a.get("name") or "").lower() for a in assets]
+
+    def first_hit(*keys: str) -> dict | None:
+        for n, a in zip(names, assets):
+            if n and any(k in n for k in keys):
+                return a
+        return None
+
+    if os.name == "nt":
+        hit = first_hit("win64", "win32", "windows", ".exe")
+    else:
+        hit = first_hit("macos", "darwin", "osx", platform.machine().lower())
+    return hit or first_hit(".zip", ".exe") or assets[0]
 
 
 def parse_version(text: str) -> tuple:
@@ -120,7 +155,7 @@ def _atom_entry(entry, ns) -> dict:
         "assets": [],
         "download_url": (
             f"https://github.com/{REPO}/releases/download/{tag}/"
-            f"RhythmBar-Studio-{tag}-win64.zip"),
+            f"RhythmBar-Studio-{tag}-{_zip_platform_suffix()}.zip"),
         "source": "atom",
     }
 
