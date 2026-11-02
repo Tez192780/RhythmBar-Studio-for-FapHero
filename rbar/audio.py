@@ -23,11 +23,19 @@ def find_ffmpeg() -> str:
     found = shutil.which("ffmpeg")
     if found:
         return found
+    exe = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
     candidates = [
         r"C:\Program Files\FFmpeg\bin\ffmpeg.exe",
         r"C:\Program Files (x86)\FFmpeg\bin\ffmpeg.exe",
         r"C:\ffmpeg\bin\ffmpeg.exe",
-        os.path.join(os.path.dirname(sys.executable), "ffmpeg.exe"),
+        os.path.join(os.path.dirname(sys.executable), exe),  # 打包版同目录
+        # macOS：Homebrew / MacPorts 常见安装位置。从 Finder 启动 .app 时
+        # PATH 里没有 brew，只能靠固定路径兜底。
+        "/opt/homebrew/bin/ffmpeg",                 # brew（Apple Silicon 默认）
+        "/usr/local/bin/ffmpeg",                    # brew（Intel 默认）
+        "/opt/homebrew/opt/ffmpeg/bin/ffmpeg",
+        "/usr/local/opt/ffmpeg/bin/ffmpeg",
+        "/opt/local/bin/ffmpeg",                    # MacPorts
     ]
     for c in candidates:
         if os.path.isfile(c):
@@ -43,7 +51,8 @@ def find_ffprobe(ffmpeg: str = "") -> str:
     """
     ff = ffmpeg or find_ffmpeg()
     if ff:
-        p = os.path.join(os.path.dirname(ff), "ffprobe.exe")
+        probe = "ffprobe.exe" if ff.lower().endswith(".exe") else "ffprobe"
+        p = os.path.join(os.path.dirname(ff), probe)
         if os.path.isfile(p):
             return p
     return shutil.which("ffprobe") or ""
