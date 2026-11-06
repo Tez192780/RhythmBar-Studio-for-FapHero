@@ -9,18 +9,22 @@ cd "$(dirname "$0")"
 echo "打包成 macOS .app（PyInstaller BUNDLE，已排除 QML/Quick/Pdf/WebEngine 等无用 Qt 模块）"
 echo
 
-# ---- 0. 环境检查：uv（依赖管理；没有就先 brew install uv）----
-if ! command -v uv >/dev/null 2>&1; then
-  echo "  没有找到 uv。请先安装：brew install uv"
-  echo "  （或按 https://docs.astral.sh/uv/ 的说明安装）"
+# ---- 0. 准备 Python 虚拟环境（不依赖 uv/pyproject，直接用 requirements.txt）----
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+  echo "  没有找到 $PYTHON_BIN。请先安装 Python 3.10+（或设置 PYTHON_BIN 指向 python）。"
   exit 1
 fi
+if [ ! -x .venv/bin/python ]; then
+  "$PYTHON_BIN" -m venv .venv
+fi
 
-# ---- 1. 同步依赖到 .venv（PySide6 / numpy，按 uv.lock）----
-uv sync
+# ---- 1. 安装依赖（PySide6 / numpy）----
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -r requirements.txt
 
 # ---- 2. 安装 PyInstaller（Python 3.14 需要 >= 6.16）----
-uv pip install -p .venv/bin/python "pyinstaller>=6.16"
+.venv/bin/python -m pip install "pyinstaller>=6.16"
 
 # ---- 3. 生成图标：assets/icon_256.png -> build/mac_icon.icns ----
 # .app 只认 .icns；用系统自带的 sips/iconutil 转换，不用装任何东西。
