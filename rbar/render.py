@@ -440,7 +440,7 @@ class BarRenderer:
                 st = th.styles.get(n.type) or th.style(n.type)
                 r = self.note_radius(h, st)
                 dt = t_ms - n.t
-                passed = dt > 0.0
+                passed = dt >= 0.0
                 ghosted = passed and dt >= float(gs.delay_ms)
                 if phase == 0 and not ghosted:
                     continue

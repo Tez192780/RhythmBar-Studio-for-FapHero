@@ -522,6 +522,9 @@ _TABLE: dict[str, tuple[str, str]] = {
         "Always show a diamond at the judge point; flash in the note color on hit."),
     "命中后先保持原样多久，再开始变残影": (
         "ヒット後、残像に変わるまでの保持時間", "How long to keep the normal look before fading to a ghost"),
+    "命中后延迟多久开始变形（0 = 命中瞬间开始）": (
+        "ヒット後、変形を始めるまでの遅延（0 = ヒット瞬間から）",
+        "Delay before morphing starts (0 = at the hit moment)"),
     "导出整帧（比如 1920×1080）时，条带放在画面的哪个位置": (
         "全体（例：1920×1080）を書き出す時、バーを画面のどこに置くか",
         "Where to place the bar when exporting a full frame (e.g. 1920×1080)"),

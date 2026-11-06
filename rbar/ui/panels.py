@@ -824,7 +824,7 @@ class StylePanel(QWidget):
         self.sl_gsize = FloatSlider(0.2, 1.5, gs.size, 0.01, 2)
         self.sl_gsize.valueChanged.connect(self._apply)
         self.sl_gdelay = FloatSlider(0.0, 1000.0, gs.delay_ms, 10, 0, " ms")
-        self.sl_gdelay.setToolTip("命中后先保持原样多久，再开始变残影")
+        self.sl_gdelay.setToolTip("命中后延迟多久开始变形（0 = 命中瞬间开始）")
         self.sl_gdelay.valueChanged.connect(self._apply)
         self.sl_gmorph = FloatSlider(0.0, 800.0, gs.morph_ms, 10, 0, " ms")
         self.sl_gmorph.setToolTip("从原音符旋转 90° 并渐变成灰块所需时间；0 = 瞬间切换")

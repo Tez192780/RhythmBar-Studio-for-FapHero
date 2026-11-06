@@ -104,7 +104,7 @@ class GhostStyle:
     alpha: float = 0.9
     size: float = 0.82
     fade_s: float = 0.55          # 越过判定点后多少秒彻底消失（0 = 不消失）
-    delay_ms: float = 90.0        # 命中后先保持原样这么久，再变残影（避免和判定闪光重叠）
+    delay_ms: float = 0.0         # 命中后先保持原样多久，再变残影（0 = 命中瞬间开始）
     morph_ms: float = 180.0       # 从原音符旋转/渐变到残影形状的过渡时长
 
     def to_dict(self) -> dict:
@@ -113,9 +113,18 @@ class GhostStyle:
     @staticmethod
     def from_dict(d: dict) -> "GhostStyle":
         base = GhostStyle()
+        legacy = "morph_ms" not in d
         for k, v in d.items():
             if hasattr(base, k):
                 setattr(base, k, v)
+        # 旧版默认是 90ms 延迟；这个延迟会让音符越过判定点后才开始变形。
+        # 新默认改为命中瞬间开始，读取没有 morph_ms 的旧主题时迁移 90ms 的旧默认值。
+        if legacy:
+            try:
+                if abs(float(base.delay_ms) - 90.0) < 1e-6:
+                    base.delay_ms = 0.0
+            except (TypeError, ValueError):
+                pass
         return base
 
 
