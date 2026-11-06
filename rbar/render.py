@@ -436,7 +436,7 @@ class BarRenderer:
         for n in visible:
             if n.dur > 0:
                 st = th.styles.get(n.type) or th.style(n.type)
-                self._draw_hold_note(p, w, h, t_ms, n, st, jx, speed, gs)
+                self._draw_hold_note(p, w, h, t_ms, n, st, jx, speed)
 
         # 先画“已越过判定点”的残影，再画正常音符，保证当前音符在最上层
         for phase in (0, 1):
@@ -505,7 +505,6 @@ class BarRenderer:
         st: NoteStyle,
         jx: float,
         speed: float,
-        gs: GhostStyle,
     ) -> None:
         """长条专用：头部命中后钉在判定点，身体缩短到 0 才消失。"""
         if t_ms >= n.end:
@@ -516,11 +515,11 @@ class BarRenderer:
         pad = h * 0.8
         x_lo, x_hi = -pad, w + pad
         if t_ms >= n.t:
-            # 活动中的长条：头固定在判定点，尾巴继续向左（或按方向）移动。
+            # 活动中的长条：头固定在判定点保持原样，尾巴继续向判定点移动。
             xt = jx + side * (n.end - t_ms) / 1000.0 * speed
             if not (max(jx, xt) < x_lo or min(jx, xt) > x_hi):
                 self._draw_hold(p, st, jx, y, r, n, t_ms, w, side, jx, h)
-            self._draw_hold_head(p, st, n, t_ms, jx, y, r, gs)
+            self._draw_note(p, st, jx, y, r, 1.0)
             return
         # 还没命中：正常滚动，头在判定点右侧。
         x = jx + side * (n.t - t_ms) / 1000.0 * speed
@@ -532,40 +531,6 @@ class BarRenderer:
         win = max(1.0, float(js.window_ms))
         k = max(0.0, 1.0 - abs(t_ms - n.t) / win)
         self._draw_note(p, st, x, y, r, 1.0, 1.0 + 0.14 * k, 0.22 * k)
-
-    def _draw_hold_head(
-        self,
-        p: QPainter,
-        st: NoteStyle,
-        n: Note,
-        t_ms: float,
-        x: float,
-        y: float,
-        r: float,
-        gs: GhostStyle,
-    ) -> None:
-        """命中后的长条头：固定在判定点，只做一次原音符到灰块的过渡。"""
-        dt = max(0.0, t_ms - n.t)
-        if gs.mode == "off":
-            self._draw_note(p, st, x, y, r, 1.0)
-            return
-        if gs.mode == "fade":
-            self._draw_note(p, st, x, y, r, 0.85, 1.0, 0.25)
-            return
-        gst = self._ghost_style(gs, st)
-        morph_s = max(0.0, float(getattr(gs, "morph_ms", 0.0))) / 1000.0
-        elapsed = max(0.0, dt - float(gs.delay_ms)) / 1000.0
-        if morph_s > 0 and elapsed < morph_s:
-            u = max(0.0, min(1.0, elapsed / morph_s))
-            u = u * u * (3.0 - 2.0 * u)
-            angle = 90.0 * u
-            self._draw_note(p, st, x, y, r, 1.0 - u, 1.0 + 0.06 * u,
-                            0.18 * (1.0 - u), angle=angle)
-            self._draw_note(p, gst, x, y, r * float(gs.size),
-                            u * float(gs.alpha), 1.0, 0.0, angle=angle)
-        else:
-            self._draw_note(p, gst, x, y, r * float(gs.size),
-                            float(gs.alpha), 1.0, 0.0)
 
     def _ghost_style(self, gs: GhostStyle, st: NoteStyle) -> NoteStyle:
         c = self._style_cache.get("__ghost__")
