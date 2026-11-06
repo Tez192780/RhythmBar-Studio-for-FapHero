@@ -826,6 +826,9 @@ class StylePanel(QWidget):
         self.sl_gdelay = FloatSlider(0.0, 1000.0, gs.delay_ms, 10, 0, " ms")
         self.sl_gdelay.setToolTip("命中后先保持原样多久，再开始变残影")
         self.sl_gdelay.valueChanged.connect(self._apply)
+        self.sl_gmorph = FloatSlider(0.0, 800.0, gs.morph_ms, 10, 0, " ms")
+        self.sl_gmorph.setToolTip("从原音符旋转 90° 并渐变成灰块所需时间；0 = 瞬间切换")
+        self.sl_gmorph.valueChanged.connect(self._apply)
         self.sl_gfade = FloatSlider(0.0, 3.0, gs.fade_s, 0.01, 2, " s")
         self.sl_gfade.valueChanged.connect(self._apply)
         f3.addRow("模式", self.cb_ghost)
@@ -834,6 +837,7 @@ class StylePanel(QWidget):
         f3.addRow("不透明度", self.sl_galpha)
         f3.addRow("大小", self.sl_gsize)
         f3.addRow("延迟", self.sl_gdelay)
+        f3.addRow("过渡时长", self.sl_gmorph)
         f3.addRow("消失时长", self.sl_gfade)
         root.addWidget(box3)
         root.addStretch(1)
@@ -877,6 +881,7 @@ class StylePanel(QWidget):
         self.sl_galpha.setValue(gs.alpha)
         self.sl_gsize.setValue(gs.size)
         self.sl_gdelay.setValue(gs.delay_ms)
+        self.sl_gmorph.setValue(gs.morph_ms)
         self.sl_gfade.setValue(gs.fade_s)
         self._loading = False
 
@@ -921,6 +926,7 @@ class StylePanel(QWidget):
         gs.alpha = self.sl_galpha.value()
         gs.size = self.sl_gsize.value()
         gs.delay_ms = self.sl_gdelay.value()
+        gs.morph_ms = self.sl_gmorph.value()
         gs.fade_s = self.sl_gfade.value()
         self.doc.touch("外观")
         self.changed.emit()

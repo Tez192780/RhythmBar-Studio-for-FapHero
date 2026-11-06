@@ -447,6 +447,12 @@ class BarRenderer:
                 if phase == 1 and ghosted:
                     continue
                 if ghosted:
+                    # 长条头已经越过判定点，但尾巴还在未来：长条本体必须继续画，
+                    # 不能因为头部变残影就让整条长条瞬间消失。
+                    if n.dur > 0 and n.end > t_ms:
+                        xt = self.judge_x(w) + side * (n.end - t_ms) / 1000.0 * speed
+                        if not (max(x, xt) < x_lo or min(x, xt) > x_hi):
+                            self._draw_hold(p, st, x, y, r, n, t_ms, w, side, jx, h)
                     if gs.mode == "off":
                         continue
                     if x < x_lo or x > x_hi:          # 屏幕外直接跳过（省掉 AA 光栅化）
@@ -459,9 +465,23 @@ class BarRenderer:
                         alpha = 1.0
                     if gs.mode == "fade":
                         self._draw_note(p, st, x, y, r, alpha * 0.85, 1.0, 0.25)
+                        continue
+                    gst = self._ghost_style(gs, st)
+                    morph_s = max(0.0, float(getattr(gs, "morph_ms", 0.0))) / 1000.0
+                    elapsed = max(0.0, dt - float(gs.delay_ms)) / 1000.0
+                    if morph_s > 0 and elapsed < morph_s:
+                        u = max(0.0, min(1.0, elapsed / morph_s))
+                        u = u * u * (3.0 - 2.0 * u)
+                        angle = 90.0 * u
+                        # 原音符旋转并淡出，灰块旋转并淡入，中间是两者叠加
+                        self._draw_note(p, st, x, y, r, alpha * (1.0 - u),
+                                        1.0 + 0.06 * u, 0.18 * (1.0 - u), angle=angle)
+                        self._draw_note(p, gst, x, y, r * float(gs.size),
+                                        alpha * u * float(gs.alpha), 1.0, 0.0,
+                                        angle=angle)
                     else:
-                        gst = self._ghost_style(gs, st)
-                        self._draw_note(p, gst, x, y, r * float(gs.size), alpha * float(gs.alpha), 1.0, 0.0)
+                        self._draw_note(p, gst, x, y, r * float(gs.size),
+                                        alpha * float(gs.alpha), 1.0, 0.0)
                     continue
 
                 # 尚未命中：正常音符（长条先画尾巴）
@@ -533,10 +553,16 @@ class BarRenderer:
         alpha: float = 1.0,
         scale: float = 1.0,
         brighten: float = 0.0,
+        angle: float = 0.0,
     ) -> None:
         if r <= 0.4 or alpha <= 0.01:
             return
         rr = r * scale
+        if abs(angle) > 0.01:
+            p.save()
+            p.translate(x, y)
+            p.rotate(angle)
+            x = y = 0.0
         path = shape_path(x, y, rr, st.shape)
         fill = qc(st.color, alpha)
         if brighten > 0:
@@ -561,6 +587,8 @@ class BarRenderer:
         p.setPen(pen)
         p.setBrush(Qt.NoBrush)
         p.drawPath(path)
+        if abs(angle) > 0.01:
+            p.restore()
 
     def _draw_flash(self, p: QPainter, st: NoteStyle, jx: float, y: float, r: float, k: float) -> None:
         """（保留给外部调用）判定点高亮：现在由常驻判定菱形负责，见 _draw_judge_diamond。"""

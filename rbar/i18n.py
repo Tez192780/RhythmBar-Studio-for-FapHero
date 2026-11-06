@@ -190,6 +190,10 @@ _TABLE: dict[str, tuple[str, str]] = {
     "灰块（还原参考图）": ("灰ブロック（参考画像どおり）", "Gray block (as reference)"),
     "原样式淡出": ("元の見た目でフェード", "Fade in original style"),
     "延迟": ("遅延", "Delay"),
+    "过渡时长": ("変化時間", "Morph Time"),
+    "从原音符旋转 90° 并渐变成灰块所需时间；0 = 瞬间切换": (
+        "元のノーツから 90° 回転しながらグレーのブロックへ変わる時間。0 = 即時切替。",
+        "Time to rotate the note 90° and morph into the gray block; 0 = instant."),
     "消失时长": ("消えるまで", "Fade Duration"),
     "格式": ("形式", "Format"),
     "封装 / 编码": ("コンテナ / コーデック", "Container / Codec"),

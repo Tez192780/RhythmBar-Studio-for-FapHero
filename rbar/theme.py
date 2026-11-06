@@ -105,6 +105,7 @@ class GhostStyle:
     size: float = 0.82
     fade_s: float = 0.55          # 越过判定点后多少秒彻底消失（0 = 不消失）
     delay_ms: float = 90.0        # 命中后先保持原样这么久，再变残影（避免和判定闪光重叠）
+    morph_ms: float = 180.0       # 从原音符旋转/渐变到残影形状的过渡时长
 
     def to_dict(self) -> dict:
         return asdict(self)
