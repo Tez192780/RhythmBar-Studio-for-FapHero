@@ -10,8 +10,8 @@ import time
 
 import numpy as np
 
-from PySide6.QtCore import QElapsedTimer, QEvent, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QActionGroup, QKeySequence
+from PySide6.QtCore import QElapsedTimer, QEvent, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
@@ -41,6 +41,7 @@ from .. import APP_NAME, __version__
 from .. import i18n
 from ..audio import (
     AudioEngine,
+    FFMPEG_NAME,
     decode_audio,
     estimate_bpm,
     estimate_offset,
@@ -54,7 +55,7 @@ from ..settings import AppSettings
 from ..tasks import Task
 from ..theme import Theme
 from ..timing import BpmSegment
-from ..updater import PAGE as RELEASES_PAGE
+from ..updater import PAGE as RELEASES_PAGE, pick_asset
 from .dialogs import BpmSegmentDialog, FillRangeDialog, TapTempoDialog
 from .panels import ChartPanel, ExportPanel, NoteTypePanel, SettingsPanel, StylePanel
 from .preview import PreviewWidget, RefFrameWidget, SpectrumWidget
@@ -1006,7 +1007,7 @@ class MainWindow(QMainWindow):
             return
         ff = self.settings.ffmpeg
         if not ff or not os.path.isfile(ff):
-            self._warn("缺少 ffmpeg", "没找到 ffmpeg.exe，请在「设置」标签里指定路径。")
+            self._warn("缺少 ffmpeg", i18n.tr(f"没找到 {FFMPEG_NAME}，请在「设置」标签里指定路径。"))
             return
         is_video = path.lower().endswith(VIDEO_EXT) and not force_audio
         from ..video import probe_audio_stream, probe_video
@@ -2005,7 +2006,7 @@ class MainWindow(QMainWindow):
             return
         ff = self.settings.ffmpeg
         if not ff or not os.path.isfile(ff):
-            self._warn("缺少 ffmpeg", "没找到 ffmpeg.exe，请在「设置」标签里指定路径。")
+            self._warn("缺少 ffmpeg", i18n.tr(f"没找到 {FFMPEG_NAME}，请在「设置」标签里指定路径。"))
             self.tabs.setCurrentWidget(self.panel_settings)
             return
         t0, t1 = compute_range(self.doc.project, self.engine.duration_ms)
@@ -2096,8 +2097,9 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _open_folder(path: str) -> None:
+        # QDesktopServices 跨平台（os.startfile 是 Windows 独有）
         try:
-            os.startfile(path)  # noqa: S606
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
         except Exception:
             pass
 
@@ -2220,11 +2222,7 @@ class MainWindow(QMainWindow):
         if len(body) > 1000:
             body = body[:1000] + "…"
         assets = res.get("assets") or []
-        asset = next((a for a in assets
-                      if a.get("url") and str(a.get("name", "")).lower().endswith(
-                          (".zip", ".exe"))), None)
-        if asset is None:
-            asset = next((a for a in assets if a.get("url")), None)
+        asset = pick_asset([a for a in assets if a.get("url")])
         download_url = (asset or {}).get("url") or res.get("download_url") or ""
         names = "、".join(a["name"] for a in assets[:5] if a.get("name"))
         if names:

@@ -17,17 +17,28 @@ from PySide6.QtMultimedia import QAudio, QAudioFormat, QAudioSink, QMediaDevices
 
 DEFAULT_SR = 48000
 
+# 可执行文件名（提示文案/选择对话框用）：Windows 带 .exe，macOS/Linux 不带。
+FFMPEG_NAME = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+
 
 # --------------------------------------------------------------------- ffmpeg
 def find_ffmpeg() -> str:
     found = shutil.which("ffmpeg")
     if found:
         return found
+    exe = FFMPEG_NAME
     candidates = [
         r"C:\Program Files\FFmpeg\bin\ffmpeg.exe",
         r"C:\Program Files (x86)\FFmpeg\bin\ffmpeg.exe",
         r"C:\ffmpeg\bin\ffmpeg.exe",
-        os.path.join(os.path.dirname(sys.executable), "ffmpeg.exe"),
+        os.path.join(os.path.dirname(sys.executable), exe),  # 打包版同目录
+        # macOS：Homebrew / MacPorts 常见安装位置。从 Finder 启动 .app 时
+        # PATH 里没有 brew，只能靠固定路径兜底。
+        "/opt/homebrew/bin/ffmpeg",                 # brew（Apple Silicon 默认）
+        "/usr/local/bin/ffmpeg",                    # brew（Intel 默认）
+        "/opt/homebrew/opt/ffmpeg/bin/ffmpeg",
+        "/usr/local/opt/ffmpeg/bin/ffmpeg",
+        "/opt/local/bin/ffmpeg",                    # MacPorts
     ]
     for c in candidates:
         if os.path.isfile(c):
@@ -43,7 +54,8 @@ def find_ffprobe(ffmpeg: str = "") -> str:
     """
     ff = ffmpeg or find_ffmpeg()
     if ff:
-        p = os.path.join(os.path.dirname(ff), "ffprobe.exe")
+        probe = "ffprobe.exe" if ff.lower().endswith(".exe") else "ffprobe"
+        p = os.path.join(os.path.dirname(ff), probe)
         if os.path.isfile(p):
             return p
     return shutil.which("ffprobe") or ""
@@ -53,7 +65,7 @@ def decode_audio(path: str, sr: int = DEFAULT_SR, ffmpeg: str | None = None) -> 
     """解码成 float32。返回 (samples, sr)，samples 形状 (n,) 单声道或 (n,2) 立体声。"""
     ff = ffmpeg or find_ffmpeg()
     if not ff:
-        raise RuntimeError("找不到 ffmpeg.exe，请在「设置」里指定路径")
+        raise RuntimeError(f"找不到 {FFMPEG_NAME}，请在「设置」里指定路径")
     cmd = [
         ff, "-v", "error", "-nostdin", "-i", path,
         "-vn", "-sn", "-dn",

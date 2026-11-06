@@ -199,17 +199,28 @@ Ctrl+U          检查更新
 
 ## 环境要求
 
-* Windows 10 / 11
-* Python 3.10+（安装时勾选 Add to PATH）
+* Windows 10 / 11，或 macOS 12+
+* Python 3.10+（Windows 安装时勾选 Add to PATH）
 * **ffmpeg**（导出和音频解码都要用）
-  已经装了就自动用；没装的话，在软件「设置」标签里手动指定 `ffmpeg.exe` 路径也行。
-  下载：<https://www.gyan.dev/ffmpeg/builds/>
+  * Windows 下载：<https://www.gyan.dev/ffmpeg/builds/>
+  * macOS：`brew install ffmpeg`
+  * 已经装了就自动找；找不到时在软件「设置」标签里手动指定 ffmpeg 路径
 
 依赖只有两个：`PySide6`、`numpy`。
+
+**Windows 源码运行：**
 
 ```
 python -m pip install -r requirements.txt
 python main.py
+```
+
+**macOS 源码运行：**
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python main.py
 ```
 
 首次启动会在**当前目录**生成 `rbar_settings.json`（已在 `.gitignore` 里，不会提交）：
@@ -219,6 +230,27 @@ python main.py
 新建工程会自动套用这些默认值；改外观或导出设置后会写回文件。
 可以直接用文本编辑器改，重启后生效；删掉它会用默认值重新生成。
 
-想打包成 exe：双击 `build_exe.bat`（需要联网装 pyinstaller，产物是 `dist\节奏条工作室\` 文件夹，不是单文件）。
+> macOS 打包后的 `.app` 因为从 Finder 启动时当前目录是只读的 `/`，配置会存到
+> `~/Library/Application Support/RhythmBarStudio/rbar_settings.json`。
+
+### 打包
+
+**Windows：** 双击 `build_exe.bat`（需要联网装 pyinstaller，产物是 `dist\节奏条工作室\` 文件夹，不是单文件）。
 现在用 `package.spec` 排除了 QML/Quick/Pdf/WebEngine/软件 OpenGL 等无用 Qt 模块，实测文件夹
 约 **125MB**（原来的 `--collect-all PySide6` 是 260MB 左右）；ffmpeg 仍需另外准备。
+
+**macOS：**
+
+```bash
+chmod +x build_app.sh
+./build_app.sh
+```
+
+脚本会创建 `.venv`、安装 `requirements.txt` 和 PyInstaller，生成
+`dist/RhythmBarStudio.app` 与 `dist/RhythmBar-Studio-v{版本}-macOS-{架构}.zip`。
+产物只包含当前 Mac 架构（Apple Silicon 和 Intel 需要分别打包）；ffmpeg 不打包，
+需要 `brew install ffmpeg`。第一次打开被 Gatekeeper 拦时，右键 App →「打开」，或执行：
+
+```bash
+xattr -cr /Applications/RhythmBarStudio.app
+```

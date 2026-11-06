@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 
 from PySide6.QtCore import QSettings
 
@@ -12,6 +13,24 @@ from .audio import find_ffmpeg
 ORG = "rbar"
 APP = "RhythmBarStudio"
 CONFIG_NAME = "rbar_settings.json"
+
+
+def _config_dir() -> str:
+    """配置文件目录。
+
+    源码运行：当前目录（方便直接看/改 rbar_settings.json）；
+    macOS 打包版：从 Finder 启动 .app 时 cwd 是 /（只读、也写不进去），
+    改用 ~/Library/Application Support/RhythmBarStudio/。
+    """
+    if sys.platform == "darwin" and getattr(sys, "frozen", False):
+        d = os.path.join(os.path.expanduser("~"), "Library",
+                         "Application Support", APP)
+        try:
+            os.makedirs(d, exist_ok=True)
+            return d
+        except OSError:
+            pass
+    return os.getcwd()
 
 
 def _as_float(v, default: float) -> float:
@@ -64,7 +83,7 @@ class AppSettings:
         self.theme: dict | None = None
         self.export: dict | None = None
 
-        self.config_path = os.path.join(os.getcwd(), CONFIG_NAME)
+        self.config_path = os.path.join(_config_dir(), CONFIG_NAME)
         self._load_file()
         if not os.path.isfile(self.config_path):
             self._save_file()          # 首次启动就在当前目录落地一个可读可改的配置

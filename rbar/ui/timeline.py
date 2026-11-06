@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import sys
 
 import numpy as np
 from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, Signal
@@ -143,8 +144,13 @@ class TimelineWidget(QWidget):
         self._clipboard_has = False
         self._drag_orig: dict[int, tuple[float, int, float]] = {}
         self._rubber: QRect | None = None
-        self._ruler_font = QFont("Consolas", 8)
-        self._small = QFont("Microsoft YaHei UI", 8)
+        if sys.platform == "darwin":
+            # Mac 上没有 Consolas / 微软雅黑，Qt 会回退并报 font alias 警告
+            self._ruler_font = QFont("Menlo", 8)
+            self._small = QFont("PingFang SC", 8)
+        else:
+            self._ruler_font = QFont("Consolas", 8)
+            self._small = QFont("Microsoft YaHei UI", 8)
         self._fps_times: list[float] = []
         # 背景缓存
         self._bg: QPixmap | None = None
