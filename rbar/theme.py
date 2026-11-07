@@ -21,6 +21,7 @@ class NoteStyle:
     outline_w: float = 0.10      # 描边宽度，相对音符直径
     size: float = 1.0            # 相对 render.note_size 的倍率
     glow: float = 0.0            # 0..1 外发光强度
+    image: str = ""              # 自定义图像皮肤；空 = 使用 shape
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -78,6 +79,8 @@ class JudgeStyle:
     idle: bool = True
     idle_color: str = "#e9edf0"   # 常驻颜色（灰白）
     idle_scale: float = 1.06      # 相对音符半径
+    shape: str = "diamond"        # 常驻形状
+    image: str = ""               # 自定义图像皮肤；空 = 使用 shape
     flash_ms: float = 260.0       # 命中后染色闪烁持续多久
     tint: float = 0.92            # 染色强度 0~1
 

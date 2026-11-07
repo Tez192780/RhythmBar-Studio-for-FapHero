@@ -2,22 +2,29 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+import os
+import uuid
+
+from PySide6.QtCore import QPointF, QRect, QRectF, Qt
+from PySide6.QtGui import QColor, QImage, QPainter, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSlider,
     QVBoxLayout,
     QWidget,
 )
 
 from ..i18n import tr, trf, translate_tree
+from ..settings import skins_dir
 
 
 def _pair(*widgets) -> QWidget:
@@ -35,6 +42,161 @@ def _wrap(layout) -> QWidget:
     w.setLayout(layout)
     layout.setContentsMargins(0, 0, 0, 0)
     return w
+
+
+class _SkinCropCanvas(QWidget):
+    """在图片上拖动正方形裁剪框；裁剪框中心就是皮肤锚点。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(420, 320)
+        self.setMouseTracking(True)
+        self._img = QImage()
+        self._center = QPointF(0.0, 0.0)
+        self._frac = 0.8
+
+    def set_image(self, img: QImage) -> None:
+        self._img = img
+        self._center = QPointF(img.width() / 2.0, img.height() / 2.0)
+        self.update()
+
+    def set_fraction(self, v: int) -> None:
+        self._frac = max(0.1, min(1.0, v / 100.0))
+        self.update()
+
+    def crop_rect(self) -> QRect:
+        w, h = self._img.width(), self._img.height()
+        if w <= 0 or h <= 0:
+            return QRect()
+        side = max(8, min(w, h, int(round(min(w, h) * self._frac))))
+        side = min(side, w, h)
+        cx = max(side / 2.0, min(w - side / 2.0, self._center.x()))
+        cy = max(side / 2.0, min(h - side / 2.0, self._center.y()))
+        return QRect(int(round(cx - side / 2.0)), int(round(cy - side / 2.0)),
+                     side, side)
+
+    def cropped_image(self) -> QImage:
+        r = self.crop_rect()
+        return self._img.copy(r) if r.isValid() and not self._img.isNull() else QImage()
+
+    def _view(self) -> tuple[float, float, float]:
+        w, h = self._img.width(), self._img.height()
+        if w <= 0 or h <= 0:
+            return 1.0, 0.0, 0.0
+        scale = min(self.width() / w, self.height() / h)
+        ox = (self.width() - w * scale) / 2.0
+        oy = (self.height() - h * scale) / 2.0
+        return scale, ox, oy
+
+    def _move_center(self, pos) -> None:
+        scale, ox, oy = self._view()
+        if scale <= 0:
+            return
+        x = (pos.x() - ox) / scale
+        y = (pos.y() - oy) / scale
+        r = self.crop_rect()
+        side = r.width()
+        w, h = self._img.width(), self._img.height()
+        self._center = QPointF(
+            max(side / 2.0, min(w - side / 2.0, x)),
+            max(side / 2.0, min(h - side / 2.0, y)),
+        )
+        self.update()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.LeftButton:
+            self._move_center(event.position())
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if event.buttons() & Qt.LeftButton:
+            self._move_center(event.position())
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor("#0b0d10"))
+        if self._img.isNull():
+            p.setPen(QColor("#8b949e"))
+            p.drawText(self.rect(), Qt.AlignCenter, tr("没有图片"))
+            return
+        scale, ox, oy = self._view()
+        iw, ih = self._img.width() * scale, self._img.height() * scale
+        p.drawImage(QRectF(ox, oy, iw, ih), self._img, QRectF(self._img.rect()))
+        r = self.crop_rect()
+        cr = QRectF(ox + r.x() * scale, oy + r.y() * scale,
+                    r.width() * scale, r.height() * scale)
+        shade = QColor(0, 0, 0, 145)
+        p.fillRect(QRectF(ox, oy, iw, cr.top() - oy), shade)
+        p.fillRect(QRectF(ox, cr.bottom(), iw, oy + ih - cr.bottom()), shade)
+        p.fillRect(QRectF(ox, cr.top(), cr.left() - ox, cr.height()), shade)
+        p.fillRect(QRectF(cr.right(), cr.top(), ox + iw - cr.right(), cr.height()), shade)
+        p.setPen(QPen(QColor("#ffffff"), 2))
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(cr)
+        cx, cy = cr.center().x(), cr.center().y()
+        p.setPen(QPen(QColor("#3fd2ea"), 1.5))
+        p.drawLine(QPointF(cx - 12, cy), QPointF(cx + 12, cy))
+        p.drawLine(QPointF(cx, cy - 12), QPointF(cx, cy + 12))
+        p.setPen(QPen(QColor("#ffffff"), 1))
+        p.drawEllipse(QPointF(cx, cy), 5, 5)
+
+
+class SkinCropDialog(QDialog):
+    """导入图片后裁剪成正方形皮肤，裁剪框中心就是判定点/音符中心。"""
+
+    def __init__(self, parent, image_path: str):
+        super().__init__(parent)
+        self.setWindowTitle("裁剪图像皮肤")
+        self.resize(540, 520)
+        lay = QVBoxLayout(self)
+        self.canvas = _SkinCropCanvas(self)
+        img = QImage(image_path)
+        if img.isNull():
+            raise ValueError(image_path)
+        self.canvas.set_image(img)
+        lay.addWidget(self.canvas, 1)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("裁剪大小"))
+        self.sl_size = QSlider(Qt.Horizontal)
+        self.sl_size.setRange(15, 100)
+        self.sl_size.setValue(80)
+        self.sl_size.valueChanged.connect(self.canvas.set_fraction)
+        row.addWidget(self.sl_size, 1)
+        lay.addLayout(row)
+        hint = QLabel("拖动图片调整裁剪位置；裁剪框中心就是判定点/音符中心")
+        hint.setStyleSheet("color:#8b949e;")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+        translate_tree(self)
+
+    def cropped_image(self) -> QImage:
+        return self.canvas.cropped_image()
+
+
+def choose_skin_image(parent, title: str = "选择图像皮肤") -> str:
+    """选择图片、裁剪并保存到 skins 目录，返回路径；取消返回空串。"""
+    path, _ = QFileDialog.getOpenFileName(
+        parent, tr(title), "", "图片 (*.png *.jpg *.jpeg *.webp *.bmp)")
+    if not path:
+        return ""
+    try:
+        dlg = SkinCropDialog(parent, path)
+    except (ValueError, OSError):
+        return ""
+    if dlg.exec() != QDialog.Accepted:
+        return ""
+    img = dlg.cropped_image()
+    if img.isNull():
+        return ""
+    if max(img.width(), img.height()) > 512:
+        img = img.scaled(512, 512, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    out = os.path.join(skins_dir(), uuid.uuid4().hex + ".png")
+    if not img.save(out, "PNG"):
+        return ""
+    return out
 
 
 class BpmSegmentDialog(QDialog):

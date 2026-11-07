@@ -38,6 +38,7 @@ from ..exporter import estimate_size_mb
 from ..i18n import tr, trf
 from ..model import FORMATS, BpmSegment
 from ..theme import PRESETS, SHAPE_LABELS, SHAPES, NoteStyle, apply_preset
+from .dialogs import choose_skin_image
 
 
 # --------------------------------------------------------------------- 基础控件
@@ -204,6 +205,12 @@ class NoteTypePanel(QWidget):
         self.sl_glow.valueChanged.connect(self._apply_glow)
         self.sl_ow = FloatSlider(0.0, 0.3, 0.10, 0.005, 3)
         self.sl_ow.valueChanged.connect(self._apply_ow)
+        self.btn_img = QPushButton("导入图像…")
+        self.btn_img_clear = QPushButton("恢复形状")
+        self.lbl_img = QLabel("未设置")
+        self.lbl_img.setStyleSheet("color:#8b949e;")
+        self.btn_img.clicked.connect(self._pick_image)
+        self.btn_img_clear.clicked.connect(self._clear_image)
         form.addRow("名称", self.ed_name)
         form.addRow("形状", self.cb_shape)
         form.addRow("颜色", self.btn_color)
@@ -211,6 +218,8 @@ class NoteTypePanel(QWidget):
         form.addRow("大小", self.sl_size)
         form.addRow("描边宽", self.sl_ow)
         form.addRow("外发光", self.sl_glow)
+        form.addRow("图像皮肤", _row(self.btn_img, self.btn_img_clear))
+        form.addRow("", self.lbl_img)
         root.addWidget(box)
 
         tip = QLabel("提示：在时间轴上单击=加点，拖拽=移动，\n拖尾部=长条，右键=更多操作。")
@@ -226,7 +235,7 @@ class NoteTypePanel(QWidget):
         self.list.clear()
         for key in rows:
             st = self.doc.project.theme.style(key)
-            item = QListWidgetItem(self._chip(st.color), st.name)
+            item = QListWidgetItem(self._chip(st.color, st.image), st.name)
             item.setData(Qt.UserRole, key)
             self.list.addItem(item)
         idx = max(0, min(len(rows) - 1, self.doc.state.current_lane))
@@ -234,14 +243,22 @@ class NoteTypePanel(QWidget):
         self._loading = False
         self._load_style()
 
-    def _chip(self, color: str) -> QIcon:
+    def _chip(self, color: str, image: str = "") -> QIcon:
         pm = QPixmap(16, 16)
         pm.fill(Qt.transparent)
         p = QPainter(pm)
         p.setRenderHint(QPainter.Antialiasing, True)
-        p.setBrush(QColor(color))
-        p.setPen(QColor("#0b0d10"))
-        p.drawRoundedRect(1, 1, 14, 14, 3, 3)
+        drawn = False
+        if image:
+            src = QPixmap(image)
+            if not src.isNull():
+                p.drawPixmap(1, 1, src.scaled(14, 14, Qt.KeepAspectRatio,
+                                              Qt.SmoothTransformation))
+                drawn = True
+        if not drawn:
+            p.setBrush(QColor(color))
+            p.setPen(QColor("#0b0d10"))
+            p.drawRoundedRect(1, 1, 14, 14, 3, 3)
         p.end()
         return QIcon(pm)
 
@@ -263,6 +280,7 @@ class NoteTypePanel(QWidget):
         self.sl_size.setValue(st.size)
         self.sl_ow.setValue(st.outline_w)
         self.sl_glow.setValue(st.glow)
+        self.lbl_img.setText(os.path.basename(st.image) if st.image else tr("未设置"))
         self._loading = False
 
     def _on_row(self, row: int) -> None:
@@ -303,7 +321,7 @@ class NoteTypePanel(QWidget):
             return
         self._loading = True
         it.setText(st.name)
-        it.setIcon(self._chip(st.color))
+        it.setIcon(self._chip(st.color, st.image))
         self._loading = False
 
     def _apply_name(self) -> None:
@@ -327,6 +345,17 @@ class NoteTypePanel(QWidget):
 
     def _apply_glow(self) -> None:
         self._apply(lambda st: setattr(st, "glow", self.sl_glow.value()))
+
+    def _pick_image(self) -> None:
+        path = choose_skin_image(self)
+        if not path:
+            return
+        self._apply(lambda st: setattr(st, "image", path))
+        self._load_style()
+
+    def _clear_image(self) -> None:
+        self._apply(lambda st: setattr(st, "image", ""))
+        self._load_style()
 
     def add_type(self) -> None:
         th = self.doc.project.theme
@@ -767,9 +796,19 @@ class StylePanel(QWidget):
         self.sl_jline.valueChanged.connect(self._apply)
         self.sl_jw = FloatSlider(0.0, 0.2, js.line_w, 0.005, 3)
         self.sl_jw.valueChanged.connect(self._apply)
-        self.chk_idle = QCheckBox("判定点常驻 45° 菱形")
-        self.chk_idle.setToolTip("不管有没有音符，判定点上都常驻一枚菱形；命中后按音符颜色闪一下")
+        self.chk_idle = QCheckBox("判定点常驻")
+        self.chk_idle.setToolTip("不管有没有音符，判定点上都常驻一枚标记；命中后按音符颜色闪一下")
         self.chk_idle.toggled.connect(self._apply)
+        self.cb_judge_shape = QComboBox()
+        for s in SHAPES:
+            self.cb_judge_shape.addItem(SHAPE_LABELS[s], s)
+        self.cb_judge_shape.currentIndexChanged.connect(self._apply)
+        self.btn_judge_img = QPushButton("导入图像…")
+        self.btn_judge_clear = QPushButton("恢复形状")
+        self.lbl_judge_img = QLabel("未设置")
+        self.lbl_judge_img.setStyleSheet("color:#8b949e;")
+        self.btn_judge_img.clicked.connect(self._pick_judge_image)
+        self.btn_judge_clear.clicked.connect(self._clear_judge_image)
         self.btn_idle = ColorButton(js.idle_color)
         self.btn_idle.colorChanged.connect(self._apply)
         self.sl_idle_scale = FloatSlider(0.4, 2.0, js.idle_scale, 0.01, 2)
@@ -793,8 +832,11 @@ class StylePanel(QWidget):
         f2.addRow("竖线透明度", self.sl_jline)
         f2.addRow("竖线粗细", self.sl_jw)
         f2.addRow("", self.chk_idle)
-        f2.addRow("菱形颜色", self.btn_idle)
-        f2.addRow("菱形大小", self.sl_idle_scale)
+        f2.addRow("形状", self.cb_judge_shape)
+        f2.addRow("图像皮肤", _row(self.btn_judge_img, self.btn_judge_clear))
+        f2.addRow("", self.lbl_judge_img)
+        f2.addRow("标记颜色", self.btn_idle)
+        f2.addRow("标记大小", self.sl_idle_scale)
         f2.addRow("", self.chk_flash)
         f2.addRow("染色强度", self.sl_tint)
         f2.addRow("染色时长", self.sl_flash_ms)
@@ -863,6 +905,9 @@ class StylePanel(QWidget):
         self.sl_jline.setValue(js.line_alpha)
         self.sl_jw.setValue(js.line_w)
         self.chk_idle.setChecked(bool(js.idle))
+        i = self.cb_judge_shape.findData(js.shape)
+        self.cb_judge_shape.setCurrentIndex(max(0, i))
+        self.lbl_judge_img.setText(os.path.basename(js.image) if js.image else tr("未设置"))
         self.btn_idle.setColor(js.idle_color)
         self.sl_idle_scale.setValue(js.idle_scale)
         self.chk_flash.setChecked(js.flash)
@@ -893,6 +938,21 @@ class StylePanel(QWidget):
         self.doc.touch("应用预设")
         self.changed.emit()
 
+    def _pick_judge_image(self) -> None:
+        path = choose_skin_image(self)
+        if not path:
+            return
+        self.doc.project.theme.judge.image = path
+        self._load_style()
+        self.doc.touch("外观")
+        self.changed.emit()
+
+    def _clear_judge_image(self) -> None:
+        self.doc.project.theme.judge.image = ""
+        self._load_style()
+        self.doc.touch("外观")
+        self.changed.emit()
+
     def _apply(self, *_) -> None:
         if self._loading:
             return
@@ -910,6 +970,7 @@ class StylePanel(QWidget):
         js.line_alpha = self.sl_jline.value()
         js.line_w = self.sl_jw.value()
         js.idle = self.chk_idle.isChecked()
+        js.shape = self.cb_judge_shape.currentData()
         js.idle_color = self.btn_idle.color()
         js.idle_scale = self.sl_idle_scale.value()
         js.tint = self.sl_tint.value()

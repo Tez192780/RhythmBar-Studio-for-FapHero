@@ -33,6 +33,13 @@ def _config_dir() -> str:
     return os.getcwd()
 
 
+def skins_dir() -> str:
+    """用户导入的音符/判定点皮肤图片目录。"""
+    d = os.path.join(_config_dir(), "skins")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
 def _as_float(v, default: float) -> float:
     try:
         return float(v)

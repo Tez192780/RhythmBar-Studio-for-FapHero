@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import math
+import os
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
@@ -16,6 +17,7 @@ from PySide6.QtGui import (
     QPainter,
     QPainterPath,
     QPen,
+    QPixmap,
     QPolygonF,
     QRadialGradient,
 )
@@ -100,6 +102,25 @@ class BarRenderer:
         self._plate_pm = None
         self._style_cache: dict[str, tuple] = {}
         self._style_sig: tuple | None = None
+        self._image_cache: dict[tuple[str, float], QPixmap | None] = {}
+
+    def _pixmap(self, path: str) -> QPixmap | None:
+        """加载并缓存用户皮肤图；文件缺失时返回 None，调用方回退到形状。"""
+        if not path:
+            return None
+        try:
+            ap = os.path.abspath(path)
+            mtime = os.path.getmtime(ap)
+        except OSError:
+            return None
+        key = (ap, mtime)
+        if key in self._image_cache:
+            return self._image_cache[key]
+        pm = QPixmap(ap)
+        if pm.isNull():
+            pm = None
+        self._image_cache[key] = pm
+        return pm
 
     # ------------------------------------------------------------- 几何计算
     @property
@@ -390,16 +411,23 @@ class BarRenderer:
             p.setBrush(QBrush(g))
             p.drawEllipse(QPointF(jx, y), r * 2.4, r * 2.4)
         rr = r * (1.0 + 0.26 * k)
-        path = shape_path(jx, y, rr, "diamond")
-        p.setPen(Qt.NoPen)
-        p.setBrush(QBrush(fill))
-        p.drawPath(path)
-        outline = st.outline if st is not None else "#141a20"
-        pen = QPen(qc(outline), max(0.9, rr * 0.17))
-        pen.setJoinStyle(Qt.RoundJoin)
-        p.setPen(pen)
-        p.setBrush(Qt.NoBrush)
-        p.drawPath(path)
+        pm = self._pixmap(getattr(js, "image", ""))
+        if pm is not None:
+            p.save()
+            p.drawPixmap(QRectF(jx - rr, y - rr, rr * 2.0, rr * 2.0),
+                         pm, QRectF(pm.rect()))
+            p.restore()
+        else:
+            path = shape_path(jx, y, rr, getattr(js, "shape", "diamond"))
+            p.setPen(Qt.NoPen)
+            p.setBrush(QBrush(fill))
+            p.drawPath(path)
+            outline = st.outline if st is not None else "#141a20"
+            pen = QPen(qc(outline), max(0.9, rr * 0.17))
+            pen.setJoinStyle(Qt.RoundJoin)
+            p.setPen(pen)
+            p.setBrush(Qt.NoBrush)
+            p.drawPath(path)
 
     # ----------------------------------------------------------------- 音符
     def _visible(self, t_ms: float, w: float) -> list[Note]:
@@ -598,6 +626,16 @@ class BarRenderer:
             p.translate(x, y)
             p.rotate(angle)
             x = y = 0.0
+        pm = self._pixmap(getattr(st, "image", ""))
+        if pm is not None:
+            p.save()
+            p.setOpacity(max(0.0, min(1.0, alpha)))
+            p.drawPixmap(QRectF(x - rr, y - rr, rr * 2.0, rr * 2.0),
+                         pm, QRectF(pm.rect()))
+            p.restore()
+            if abs(angle) > 0.01:
+                p.restore()
+            return
         path = shape_path(x, y, rr, st.shape)
         fill = qc(st.color, alpha)
         if brighten > 0:
