@@ -191,8 +191,8 @@ def choose_skin_image(parent, title: str = "选择图像皮肤") -> str:
     img = dlg.cropped_image()
     if img.isNull():
         return ""
-    if max(img.width(), img.height()) > 512:
-        img = img.scaled(512, 512, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    if max(img.width(), img.height()) > 1024:
+        img = img.scaled(1024, 1024, Qt.KeepAspectRatio, Qt.SmoothTransformation)
     out = os.path.join(skins_dir(), uuid.uuid4().hex + ".png")
     if not img.save(out, "PNG"):
         return ""

@@ -65,7 +65,10 @@ def mix(a: QColor, b: QColor, k: float) -> QColor:
 WHITE = QColor(255, 255, 255)
 BLACK = QColor(0, 0, 0)
 
-SHAPE_SQUEEZE = {"diamond": 1.0, "square": 0.84, "circle": 0.92, "bar": 0.42}
+SHAPE_SQUEEZE = {
+    "diamond": 1.0, "square": 0.84, "circle": 0.92, "bar": 0.42,
+    "triangle": 0.98, "star": 1.0, "cross": 0.96, "hexagon": 0.95,
+}
 
 
 def shape_path(cx: float, cy: float, r: float, shape: str) -> QPainterPath:
@@ -81,6 +84,39 @@ def shape_path(cx: float, cy: float, r: float, shape: str) -> QPainterPath:
         bw = r * 2.0
         bh = r * SHAPE_SQUEEZE["bar"] * 2.0
         p.addRoundedRect(QRectF(cx - bw * 0.5, cy - bh * 0.5, bw, bh), bh * 0.5, bh * 0.5)
+    elif shape == "triangle":
+        p.addPolygon(QPolygonF([
+            QPointF(cx, cy - r * 1.05),
+            QPointF(cx + r * 1.00, cy + r * 0.82),
+            QPointF(cx - r * 1.00, cy + r * 0.82),
+        ]))
+        p.closeSubpath()
+    elif shape == "star":
+        pts = []
+        for i in range(10):
+            rr = r if i % 2 == 0 else r * 0.44
+            a = -math.pi / 2.0 + i * math.pi / 5.0
+            pts.append(QPointF(cx + math.cos(a) * rr, cy + math.sin(a) * rr))
+        p.addPolygon(QPolygonF(pts))
+        p.closeSubpath()
+    elif shape == "cross":
+        arm, ext = r * 0.34, r
+        p.addPolygon(QPolygonF([
+            QPointF(cx - arm, cy - ext), QPointF(cx + arm, cy - ext),
+            QPointF(cx + arm, cy - arm), QPointF(cx + ext, cy - arm),
+            QPointF(cx + ext, cy + arm), QPointF(cx + arm, cy + arm),
+            QPointF(cx + arm, cy + ext), QPointF(cx - arm, cy + ext),
+            QPointF(cx - arm, cy + arm), QPointF(cx - ext, cy + arm),
+            QPointF(cx - ext, cy - arm), QPointF(cx - arm, cy - arm),
+        ]))
+        p.closeSubpath()
+    elif shape == "hexagon":
+        pts = []
+        for i in range(6):
+            a = math.pi / 6.0 + i * math.pi / 3.0
+            pts.append(QPointF(cx + math.cos(a) * r, cy + math.sin(a) * r))
+        p.addPolygon(QPolygonF(pts))
+        p.closeSubpath()
     else:  # diamond
         poly = QPolygonF(
             [QPointF(cx, cy - r), QPointF(cx + r, cy), QPointF(cx, cy + r), QPointF(cx - r, cy)]

@@ -111,6 +111,10 @@ _TABLE: dict[str, tuple[str, str]] = {
     "方块": ("四角", "Square"),
     "圆形": ("円", "Circle"),
     "长条": ("長押しバー", "Bar"),
+    "三角形": ("三角形", "Triangle"),
+    "星形": ("星形", "Star"),
+    "十字": ("十字", "Cross"),
+    "六边形": ("六角形", "Hexagon"),
     "提示：在时间轴上单击=加点，拖拽=移动，\n拖尾部=长条，右键=更多操作。": (
         "ヒント：タイムラインをクリック＝配置、ドラッグ＝移動、\n右端をドラッグ＝長押し、右クリック＝その他。",
         "Tip: click = place, drag = move,\ndrag the right edge = hold, right click = more."),

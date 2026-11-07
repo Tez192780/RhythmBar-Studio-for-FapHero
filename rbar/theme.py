@@ -5,8 +5,17 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field, asdict
 
-SHAPES = ("diamond", "square", "circle", "bar")
-SHAPE_LABELS = {"diamond": "菱形", "square": "方块", "circle": "圆形", "bar": "长条"}
+SHAPES = ("diamond", "square", "circle", "bar", "triangle", "star", "cross", "hexagon")
+SHAPE_LABELS = {
+    "diamond": "菱形",
+    "square": "方块",
+    "circle": "圆形",
+    "bar": "长条",
+    "triangle": "三角形",
+    "star": "星形",
+    "cross": "十字",
+    "hexagon": "六边形",
+}
 
 
 @dataclass
