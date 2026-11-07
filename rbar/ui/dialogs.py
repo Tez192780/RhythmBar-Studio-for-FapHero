@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -45,35 +44,42 @@ def _wrap(layout) -> QWidget:
 
 
 class _SkinCropCanvas(QWidget):
-    """在图片上拖动正方形裁剪框；裁剪框中心就是皮肤锚点。"""
+    """自由矩形裁剪：拖边框/角缩放，拖内部移动；中心十字是皮肤锚点。"""
+
+    _HANDLE_PX = 9.0
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumSize(420, 320)
         self.setMouseTracking(True)
         self._img = QImage()
-        self._center = QPointF(0.0, 0.0)
-        self._frac = 0.8
+        self._crop = QRectF()
+        self._drag = ""
+        self._start_img = QPointF()
+        self._start_crop = QRectF()
 
     def set_image(self, img: QImage) -> None:
         self._img = img
-        self._center = QPointF(img.width() / 2.0, img.height() / 2.0)
+        if img.isNull():
+            self._crop = QRectF()
+        else:
+            w, h = float(img.width()), float(img.height())
+            side = min(w, h) * 0.8
+            self._crop = QRectF((w - side) / 2.0, (h - side) / 2.0, side, side)
         self.update()
 
-    def set_fraction(self, v: int) -> None:
-        self._frac = max(0.1, min(1.0, v / 100.0))
-        self.update()
+    def reset(self) -> None:
+        self.set_image(self._img)
 
     def crop_rect(self) -> QRect:
-        w, h = self._img.width(), self._img.height()
-        if w <= 0 or h <= 0:
+        if self._img.isNull() or self._crop.isEmpty():
             return QRect()
-        side = max(8, min(w, h, int(round(min(w, h) * self._frac))))
-        side = min(side, w, h)
-        cx = max(side / 2.0, min(w - side / 2.0, self._center.x()))
-        cy = max(side / 2.0, min(h - side / 2.0, self._center.y()))
-        return QRect(int(round(cx - side / 2.0)), int(round(cy - side / 2.0)),
-                     side, side)
+        r = self._crop.normalized()
+        x = max(0, min(self._img.width() - 1, int(round(r.left()))))
+        y = max(0, min(self._img.height() - 1, int(round(r.top()))))
+        w = max(1, min(self._img.width() - x, int(round(r.width()))))
+        h = max(1, min(self._img.height() - y, int(round(r.height()))))
+        return QRect(x, y, w, h)
 
     def cropped_image(self) -> QImage:
         r = self.crop_rect()
@@ -88,28 +94,99 @@ class _SkinCropCanvas(QWidget):
         oy = (self.height() - h * scale) / 2.0
         return scale, ox, oy
 
-    def _move_center(self, pos) -> None:
+    def _to_img(self, pos) -> QPointF:
         scale, ox, oy = self._view()
         if scale <= 0:
-            return
-        x = (pos.x() - ox) / scale
-        y = (pos.y() - oy) / scale
-        r = self.crop_rect()
-        side = r.width()
-        w, h = self._img.width(), self._img.height()
-        self._center = QPointF(
-            max(side / 2.0, min(w - side / 2.0, x)),
-            max(side / 2.0, min(h - side / 2.0, y)),
-        )
-        self.update()
+            return QPointF()
+        return QPointF((pos.x() - ox) / scale, (pos.y() - oy) / scale)
+
+    def _screen_crop(self) -> QRectF:
+        scale, ox, oy = self._view()
+        r = self._crop.normalized()
+        return QRectF(ox + r.x() * scale, oy + r.y() * scale,
+                      r.width() * scale, r.height() * scale)
+
+    def _hit(self, pos) -> str:
+        cr = self._screen_crop()
+        t = self._HANDLE_PX
+        x, y = pos.x(), pos.y()
+        near_l = abs(x - cr.left()) <= t
+        near_r = abs(x - cr.right()) <= t
+        near_t = abs(y - cr.top()) <= t
+        near_b = abs(y - cr.bottom()) <= t
+        inside_v = cr.top() - t <= y <= cr.bottom() + t
+        inside_h = cr.left() - t <= x <= cr.right() + t
+        if near_l and near_t:
+            return "tl"
+        if near_r and near_t:
+            return "tr"
+        if near_l and near_b:
+            return "bl"
+        if near_r and near_b:
+            return "br"
+        if near_l and inside_v:
+            return "l"
+        if near_r and inside_v:
+            return "r"
+        if near_t and inside_h:
+            return "t"
+        if near_b and inside_h:
+            return "b"
+        if cr.contains(pos):
+            return "move"
+        return ""
+
+    def _clamp_crop(self, r: QRectF) -> QRectF:
+        w, h = float(self._img.width()), float(self._img.height())
+        minw = min(16.0, w)
+        minh = min(16.0, h)
+        r = r.normalized()
+        if r.width() < minw:
+            r.setWidth(minw)
+        if r.height() < minh:
+            r.setHeight(minh)
+        if r.left() < 0:
+            r.moveLeft(0)
+        if r.top() < 0:
+            r.moveTop(0)
+        if r.right() > w:
+            r.moveRight(w)
+        if r.bottom() > h:
+            r.moveBottom(h)
+        return r
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
-        if event.button() == Qt.LeftButton:
-            self._move_center(event.position())
+        if event.button() != Qt.LeftButton:
+            return
+        self._drag = self._hit(event.position())
+        self._start_img = self._to_img(event.position())
+        self._start_crop = QRectF(self._crop)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
-        if event.buttons() & Qt.LeftButton:
-            self._move_center(event.position())
+        if not self._drag:
+            return
+        p = self._to_img(event.position())
+        dx, dy = p.x() - self._start_img.x(), p.y() - self._start_img.y()
+        r = QRectF(self._start_crop)
+        if self._drag == "move":
+            r.translate(dx, dy)
+        else:
+            left, top = r.left(), r.top()
+            right, bottom = r.right(), r.bottom()
+            if "l" in self._drag:
+                left += dx
+            if "r" in self._drag:
+                right += dx
+            if "t" in self._drag:
+                top += dy
+            if "b" in self._drag:
+                bottom += dy
+            r = QRectF(left, top, max(16.0, right - left), max(16.0, bottom - top))
+        self._crop = self._clamp_crop(r)
+        self.update()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        self._drag = ""
 
     def paintEvent(self, event) -> None:  # noqa: N802
         p = QPainter(self)
@@ -121,9 +198,7 @@ class _SkinCropCanvas(QWidget):
         scale, ox, oy = self._view()
         iw, ih = self._img.width() * scale, self._img.height() * scale
         p.drawImage(QRectF(ox, oy, iw, ih), self._img, QRectF(self._img.rect()))
-        r = self.crop_rect()
-        cr = QRectF(ox + r.x() * scale, oy + r.y() * scale,
-                    r.width() * scale, r.height() * scale)
+        cr = self._screen_crop()
         shade = QColor(0, 0, 0, 145)
         p.fillRect(QRectF(ox, oy, iw, cr.top() - oy), shade)
         p.fillRect(QRectF(ox, cr.bottom(), iw, oy + ih - cr.bottom()), shade)
@@ -132,6 +207,13 @@ class _SkinCropCanvas(QWidget):
         p.setPen(QPen(QColor("#ffffff"), 2))
         p.setBrush(Qt.NoBrush)
         p.drawRect(cr)
+        # 8 个缩放把手
+        hs = QRectF(0, 0, 7, 7)
+        for hx, hy in ((cr.left(), cr.top()), (cr.center().x(), cr.top()),
+                       (cr.right(), cr.top()), (cr.right(), cr.center().y()),
+                       (cr.right(), cr.bottom()), (cr.center().x(), cr.bottom()),
+                       (cr.left(), cr.bottom()), (cr.left(), cr.center().y())):
+            p.fillRect(QRectF(hx - 3.5, hy - 3.5, 7, 7), QColor("#3fd2ea"))
         cx, cy = cr.center().x(), cr.center().y()
         p.setPen(QPen(QColor("#3fd2ea"), 1.5))
         p.drawLine(QPointF(cx - 12, cy), QPointF(cx + 12, cy))
@@ -141,7 +223,7 @@ class _SkinCropCanvas(QWidget):
 
 
 class SkinCropDialog(QDialog):
-    """导入图片后裁剪成正方形皮肤，裁剪框中心就是判定点/音符中心。"""
+    """导入图片后自由矩形裁剪，裁剪框中心就是判定点/音符中心。"""
 
     def __init__(self, parent, image_path: str):
         super().__init__(parent)
@@ -155,14 +237,12 @@ class SkinCropDialog(QDialog):
         self.canvas.set_image(img)
         lay.addWidget(self.canvas, 1)
         row = QHBoxLayout()
-        row.addWidget(QLabel("裁剪大小"))
-        self.sl_size = QSlider(Qt.Horizontal)
-        self.sl_size.setRange(15, 100)
-        self.sl_size.setValue(80)
-        self.sl_size.valueChanged.connect(self.canvas.set_fraction)
-        row.addWidget(self.sl_size, 1)
+        b_reset = QPushButton("重置裁剪")
+        b_reset.clicked.connect(self.canvas.reset)
+        row.addWidget(b_reset)
+        row.addStretch(1)
         lay.addLayout(row)
-        hint = QLabel("拖动图片调整裁剪位置；裁剪框中心就是判定点/音符中心")
+        hint = QLabel("拖动边框/角自由裁剪矩形，拖动内部移动；裁剪框中心就是判定点/音符中心")
         hint.setStyleSheet("color:#8b949e;")
         hint.setWordWrap(True)
         lay.addWidget(hint)

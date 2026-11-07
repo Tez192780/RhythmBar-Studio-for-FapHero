@@ -191,6 +191,10 @@ _TABLE: dict[str, tuple[str, str]] = {
     "未设置": ("未設定", "Not Set"),
     "裁剪图像皮肤": ("画像スキンをトリミング", "Crop Image Skin"),
     "裁剪大小": ("トリミングサイズ", "Crop Size"),
+    "重置裁剪": ("トリミングをリセット", "Reset Crop"),
+    "拖动边框/角自由裁剪矩形，拖动内部移动；裁剪框中心就是判定点/音符中心": (
+        "枠の辺/角をドラッグして自由な矩形に切り抜き、内側をドラッグして移動。枠の中心が判定点/ノーツの中心になります。",
+        "Drag edges/corners for a free rectangle, drag inside to move; the crop center is the judge/note center."),
     "拖动图片调整裁剪位置；裁剪框中心就是判定点/音符中心": (
         "画像をドラッグして位置を調整。切り抜き枠の中心が判定点/ノーツの中心になります。",
         "Drag the image to position the crop; the crop center is the judge/note center."),

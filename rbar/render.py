@@ -158,6 +158,13 @@ class BarRenderer:
         self._image_cache[key] = pm
         return pm
 
+    def _image_rect(self, x: float, y: float, box: float, pm: QPixmap) -> QRectF:
+        """在 box×box 的框内按原始比例居中放置图片。"""
+        iw, ih = max(1, pm.width()), max(1, pm.height())
+        scale = min(box / iw, box / ih)
+        w, h = iw * scale, ih * scale
+        return QRectF(x - w / 2.0, y - h / 2.0, w, h)
+
     # ------------------------------------------------------------- 几何计算
     @property
     def rs(self) -> RenderSettings:
@@ -450,7 +457,7 @@ class BarRenderer:
         pm = self._pixmap(getattr(js, "image", ""))
         if pm is not None:
             p.save()
-            p.drawPixmap(QRectF(jx - rr, y - rr, rr * 2.0, rr * 2.0),
+            p.drawPixmap(self._image_rect(jx, y, rr * 2.0, pm),
                          pm, QRectF(pm.rect()))
             p.restore()
         else:
@@ -666,7 +673,7 @@ class BarRenderer:
         if pm is not None:
             p.save()
             p.setOpacity(max(0.0, min(1.0, alpha)))
-            p.drawPixmap(QRectF(x - rr, y - rr, rr * 2.0, rr * 2.0),
+            p.drawPixmap(self._image_rect(x, y, rr * 2.0, pm),
                          pm, QRectF(pm.rect()))
             p.restore()
             if abs(angle) > 0.01:
