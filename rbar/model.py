@@ -474,7 +474,7 @@ class Project:
         except ValueError:
             return path
 
-    def save(self, path: str) -> None:
+    def save(self, path: str, *, update_path: bool = True) -> None:
         path = os.path.abspath(path)
         if not path.lower().endswith(PROJECT_EXT):
             path += PROJECT_EXT
@@ -486,7 +486,8 @@ class Project:
             cd["path"] = self._rel(raw.path, base)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(d, f, ensure_ascii=False, indent=1)
-        self.path = path
+        if update_path:
+            self.path = path
 
     @staticmethod
     def load(path: str) -> "Project":

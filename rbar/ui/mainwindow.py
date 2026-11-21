@@ -1925,7 +1925,8 @@ class MainWindow(QMainWindow):
                 self.set_project(p, audio_path=path)
             else:
                 proj = Project.load(path)
-                auto = path + ".autosave" + PROJECT_EXT
+                self._cleanup_autosaves(path)
+                auto = self._autosave_path(path)
                 if os.path.isfile(auto) and os.path.getmtime(auto) > os.path.getmtime(path):
                     if not self.silent and QMessageBox.question(
                             self, "发现自动保存",
@@ -1946,6 +1947,7 @@ class MainWindow(QMainWindow):
             return self.save_project_as()
         try:
             self.doc.project.save(self.doc.project.path)
+            self._remove_autosaves(self.doc.project.path)
             self.doc.mark_clean()
             self.settings.add_recent(self.doc.project.path)
             self.settings.save()
@@ -1965,11 +1967,64 @@ class MainWindow(QMainWindow):
         self.doc.project.path = path
         return self.save_project()
 
+    @staticmethod
+    def _autosave_path(path: str) -> str:
+        return os.path.abspath(path) + ".autosave" + PROJECT_EXT
+
+    @classmethod
+    def _cleanup_autosaves(cls, path: str) -> None:
+        """Keep one autosave, promoting the newest legacy nested file first."""
+        path = os.path.abspath(path)
+        base = os.path.basename(path)
+        keep = base + ".autosave" + PROJECT_EXT
+        d = os.path.dirname(path)
+        try:
+            names = os.listdir(d)
+        except OSError:
+            return
+        canonical = os.path.join(d, keep)
+        candidates: list[str] = []
+        for name in names:
+            if not name.startswith(base + ".autosave") or not name.lower().endswith(PROJECT_EXT):
+                continue
+            full = os.path.join(d, name)
+            if os.path.isfile(full):
+                candidates.append(full)
+        if not candidates:
+            return
+        try:
+            best = max(candidates, key=os.path.getmtime)
+        except OSError:
+            return
+        if os.path.abspath(best) != os.path.abspath(canonical):
+            try:
+                os.replace(best, canonical)
+            except OSError:
+                return
+        for full in candidates:
+            if os.path.abspath(full) == os.path.abspath(canonical):
+                continue
+            try:
+                os.remove(full)
+            except OSError:
+                pass
+
+    def _remove_autosaves(self, path: str) -> None:
+        self._cleanup_autosaves(path)
+        try:
+            auto = self._autosave_path(os.path.abspath(path))
+            if os.path.isfile(auto):
+                os.remove(auto)
+        except OSError:
+            pass
+
     def _autosave(self) -> None:
         p = self.doc.project.path
         try:
             if p:
-                self.doc.project.save(p + ".autosave")
+                auto = self._autosave_path(os.path.abspath(p))
+                self.doc.project.save(auto, update_path=False)
+                self._cleanup_autosaves(p)
             else:
                 d = os.path.join(os.path.expanduser("~"), ".rbar")
                 os.makedirs(d, exist_ok=True)
