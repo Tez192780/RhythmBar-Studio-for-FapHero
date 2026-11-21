@@ -431,7 +431,8 @@ class BarRenderer:
             # 未知类型（手改工程/旧数据）也要能画，不能 AttributeError
             st = NoteStyle(key=n.type, name=n.type)
         y = self.lane_y(n.lane, h) if n is not None else h * 0.5
-        base_r = 0.5 * float(self.rs.note_size) * h * (float(st.size) if st is not None else 1.0)
+        # 判定点大小只由判定点自身设置决定，不能跟着当前音符类型的 size 变。
+        base_r = 0.5 * float(self.rs.note_size) * h
         r = base_r * float(js.idle_scale)
         k = 0.0
         if n is not None and js.flash and 0.0 <= dt <= float(js.flash_ms):

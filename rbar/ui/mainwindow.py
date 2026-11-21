@@ -1843,6 +1843,7 @@ class MainWindow(QMainWindow):
         self.doc.state = type(self.doc.state)()
         self.timeline.set_audio(None, 0.0)
         self.timeline.set_duration(0.0)
+        self.panel_export.reset_size_mode()
         self.refresh_all()
         self._sync_view_actions()
         # 恢复工程里的媒体片段：逐个解码进缓存，最后统一混音

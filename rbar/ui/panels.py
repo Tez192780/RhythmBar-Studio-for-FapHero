@@ -1003,6 +1003,7 @@ class ExportPanel(QWidget):
         super().__init__(parent)
         self.doc = doc
         self._loading = False
+        self._custom_size = False
         inner = QWidget()
         root = QVBoxLayout(inner)
         root.setContentsMargins(8, 8, 8, 8)
@@ -1034,7 +1035,7 @@ class ExportPanel(QWidget):
         for w, h in ((1920, 120), (2560, 160), (1280, 80), (3840, 240), (1920, 1080)):
             self.cb_size.addItem(f"{w}×{h}", (w, h))
         self.cb_size.addItem("自定义", None)
-        self.cb_size.currentIndexChanged.connect(self._apply)
+        self.cb_size.currentIndexChanged.connect(self._on_size_changed)
         self.sp_w = QSpinBox()
         self.sp_w.setRange(16, 7680)
         self.sp_w.setSingleStep(2)
@@ -1120,6 +1121,21 @@ class ExportPanel(QWidget):
         lay.addWidget(_scroll(inner))
         self.refresh()
 
+    def _on_size_changed(self, *_) -> None:
+        if self._loading:
+            return
+        self._custom_size = self.cb_size.currentData() is None
+        self._update_size_enabled()
+        self._apply()
+
+    def _update_size_enabled(self) -> None:
+        self.sp_w.setEnabled(self._custom_size)
+        self.sp_h.setEnabled(self._custom_size)
+
+    def reset_size_mode(self) -> None:
+        """切换工程时重新按工程尺寸匹配预设/自定义。"""
+        self._custom_size = False
+
     def refresh(self) -> None:
         self._loading = True
         ex = self.doc.project.export
@@ -1128,18 +1144,24 @@ class ExportPanel(QWidget):
         i = self.cb_quality.findData(ex.quality)
         self.cb_quality.setCurrentIndex(max(0, i))
         self.sp_fps.setValue(int(ex.fps))
-        # findData(tuple) 在 PySide6 里匹配不上，必须自己遍历 itemData
+        # 自定义尺寸要保留“自定义”选择，不能因为宽高刚好等于某个预设就被吸回去。
         target_size = (int(ex.width), int(ex.height))
         j = -1
-        for k in range(self.cb_size.count()):
-            data = self.cb_size.itemData(k)
-            if isinstance(data, (tuple, list)) and len(data) == 2:
-                if (int(data[0]), int(data[1])) == target_size:
-                    j = k
-                    break
-        self.cb_size.setCurrentIndex(j if j >= 0 else self.cb_size.count() - 1)
+        if not self._custom_size:
+            for k in range(self.cb_size.count()):
+                data = self.cb_size.itemData(k)
+                if isinstance(data, (tuple, list)) and len(data) == 2:
+                    if (int(data[0]), int(data[1])) == target_size:
+                        j = k
+                        break
+            if j < 0:
+                self._custom_size = True
+        if self._custom_size:
+            j = self.cb_size.count() - 1
+        self.cb_size.setCurrentIndex(max(0, j))
         self.sp_w.setValue(int(ex.width))
         self.sp_h.setValue(int(ex.height))
+        self._update_size_enabled()
         i = self.cb_ss.findData(int(ex.supersample))
         self.cb_ss.setCurrentIndex(max(0, i))
         i = self.cb_valign.findData(ex.bar_valign)
