@@ -209,6 +209,10 @@ class BarRenderer:
     def note_radius(self, h: float, st: NoteStyle, scale: float = 1.0) -> float:
         return 0.5 * float(self.rs.note_size) * h * float(st.size) * scale
 
+    def ghost_radius(self, h: float, gs: GhostStyle) -> float:
+        """残影大小只由残影自己的设置决定，不继承音符类型的大小。"""
+        return 0.5 * float(self.rs.note_size) * h * float(gs.size)
+
     # --------------------------------------------------------------- 主入口
     def render(self, p: QPainter, w: float, h: float, t_ms: float, *,
                solid_bg: QColor | None = None, clear: bool = True) -> None:
@@ -494,6 +498,7 @@ class BarRenderer:
         pad = h * 0.8
         x_lo, x_hi = -pad, w + pad
         speed = self.speed(w)
+        ghost_r = self.ghost_radius(h, gs)
         # 每种类型只解析一次颜色 / 只建一次画笔
         sig = tuple((k, s.color, s.outline, round(float(s.size), 4), round(float(s.glow), 4))
                     for k, s in th.styles.items()) + (
@@ -551,11 +556,11 @@ class BarRenderer:
                         # 原音符旋转并淡出，灰块旋转并淡入，中间是两者叠加
                         self._draw_note(p, st, x, y, r, alpha * (1.0 - u),
                                         1.0 + 0.06 * u, 0.18 * (1.0 - u), angle=angle)
-                        self._draw_note(p, gst, x, y, r * float(gs.size),
+                        self._draw_note(p, gst, x, y, ghost_r,
                                         alpha * u * float(gs.alpha), 1.0, 0.0,
                                         angle=angle)
                     else:
-                        self._draw_note(p, gst, x, y, r * float(gs.size),
+                        self._draw_note(p, gst, x, y, ghost_r,
                                         alpha * float(gs.alpha), 1.0, 0.0)
                     continue
 
