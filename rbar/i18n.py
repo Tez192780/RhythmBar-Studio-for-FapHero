@@ -352,6 +352,7 @@ _TABLE: dict[str, tuple[str, str]] = {
     "粘贴到这里 (Ctrl+V)": ("ここに貼り付け (Ctrl+V)", "Paste here (Ctrl+V)"),
     "粘贴到当前时间": ("再生位置に貼り付け", "Paste at current time"),
     "粘贴 (Ctrl+V，落在鼠标处)": ("貼り付け (Ctrl+V・マウス位置)", "Paste (Ctrl+V, at cursor)"),
+    "粘贴（落在鼠标处）": ("貼り付け（マウス位置）", "Paste (at cursor)"),
     "检查更新…": ("アップデートを確認…", "Check for Updates…"),
     "正在检查更新…": ("アップデートを確認中…", "Checking for updates…"),
     "检查更新": ("アップデートの確認", "Check for Updates"),

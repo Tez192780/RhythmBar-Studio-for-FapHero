@@ -311,9 +311,9 @@ class MainWindow(QMainWindow):
         grp.addAction(self.a_draw_tool)
         grp.addAction(self.a_range_tool)
         self.tool_group = grp
-        a_selall = act("全选", self.select_all, "Ctrl+A")
-        a_copy = act("复制 (Ctrl+C)", self.copy_notes)
-        a_paste = act("粘贴 (Ctrl+V，落在鼠标处)", lambda: self.paste_notes())
+        self.a_selall = act("全选", self.select_all, "Ctrl+A")
+        self.a_copy = act("复制", self.copy_notes, "Ctrl+C")
+        self.a_paste = act("粘贴（落在鼠标处）", lambda: self.paste_notes(), "Ctrl+V")
         a_dup = act("向后复制一份 (Ctrl+D)", self.duplicate_forward)
         a_quant = act("量化到网格 (Ctrl+Q)", self.quantize_selection)
         a_mirror = act("镜像选中区间 (Ctrl+M)", self.mirror_selection)
@@ -325,7 +325,7 @@ class MainWindow(QMainWindow):
         m_edit.addAction(self.a_draw_tool)
         m_edit.addAction(self.a_range_tool)
         m_edit.addSeparator()
-        for a in (a_selall, a_copy, a_paste, a_dup, a_quant, a_mirror, a_del):
+        for a in (self.a_selall, self.a_copy, self.a_paste, a_dup, a_quant, a_mirror, a_del):
             m_edit.addAction(a)
 
         m_view = self.menuBar().addMenu("视图")
