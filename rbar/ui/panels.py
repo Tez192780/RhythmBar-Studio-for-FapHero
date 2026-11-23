@@ -594,6 +594,25 @@ class ChartPanel(QWidget):
         self.sl_beatsize.setToolTip("字号，相对节奏条高度")
         self.sl_beatsize.valueChanged.connect(self._apply_render)
         f3.addRow("计数方式/字号", _row(self.cb_beatmode, self.sl_beatsize))
+        self.btn_beat = ColorButton("#ffffff")
+        self.btn_beat.colorChanged.connect(self._apply_render)
+        self.sl_beatalpha = FloatSlider(0.0, 1.0, 0.92, 0.01, 2)
+        self.sl_beatalpha.setToolTip("计数文字透明度")
+        self.sl_beatalpha.valueChanged.connect(self._apply_render)
+        f3.addRow("计数颜色/透明度", _row(self.btn_beat, self.sl_beatalpha))
+
+        # 节奏条本身的画布尺寸（哑铃之类的纵向元素需要足够的高度）
+        self.sp_bar_w = QSpinBox()
+        self.sp_bar_w.setRange(320, 3840)
+        self.sp_bar_w.setSingleStep(10)
+        self.sp_bar_w.setSuffix(" px")
+        self.sp_bar_w.valueChanged.connect(self._apply_bar_size)
+        self.sp_bar_h = QSpinBox()
+        self.sp_bar_h.setRange(40, 600)
+        self.sp_bar_h.setSingleStep(10)
+        self.sp_bar_h.setSuffix(" px")
+        self.sp_bar_h.valueChanged.connect(self._apply_bar_size)
+        f3.addRow("条带尺寸", _row(self.sp_bar_w, self.sp_bar_h))
         root.addWidget(box3)
         root.addStretch(1)
 
@@ -693,6 +712,10 @@ class ChartPanel(QWidget):
         i = self.cb_beatmode.findData(getattr(rs, "beat_counter_mode", "notes"))
         self.cb_beatmode.setCurrentIndex(max(0, i))
         self.sl_beatsize.setValue(getattr(rs, "beat_counter_size", 0.14))
+        self.btn_beat.setColor(str(getattr(rs, "beat_counter_color", "#ffffff")))
+        self.sl_beatalpha.setValue(getattr(rs, "beat_counter_alpha", 0.92))
+        self.sp_bar_w.setValue(int(rs.width))
+        self.sp_bar_h.setValue(int(rs.height))
         self.chk_snap.setChecked(self.doc.state.snap_on)
         j = self.cb_snap.findData(self.doc.state.snap_divisor)
         self.cb_snap.setCurrentIndex(max(0, j))
@@ -789,6 +812,22 @@ class ChartPanel(QWidget):
         self.doc.state.snap_divisor = float(self.cb_snap.currentData())
         self.changed.emit()
 
+    def _apply_bar_size(self, *_) -> None:
+        """条带画布尺寸：同时把「导出尺寸」跟着改（两者原本一致时才跟随，避免覆盖用户自选）。"""
+        if self._loading:
+            return
+        rs = self.doc.project.render
+        ex = self.doc.project.export
+        old_w, old_h = int(rs.width), int(rs.height)
+        w, h = int(self.sp_bar_w.value()), int(self.sp_bar_h.value())
+        follows = (int(ex.width), int(ex.height)) == (old_w, old_h)
+        rs.width, rs.height = w, h
+        if follows:
+            ex.width, ex.height = w, h
+        self.doc.touch("条带尺寸")
+        self.changed.emit()
+        self.renderChanged.emit()
+
     def _apply_render(self, *_) -> None:
         if self._loading:
             return
@@ -809,6 +848,8 @@ class ChartPanel(QWidget):
         rs.beat_counter_pos = self.cb_beatpos.currentData()
         rs.beat_counter_mode = self.cb_beatmode.currentData()
         rs.beat_counter_size = self.sl_beatsize.value()
+        rs.beat_counter_color = self.btn_beat.color()
+        rs.beat_counter_alpha = self.sl_beatalpha.value()
         self.doc.project.export.background = self.cb_bg.currentData()
         self.doc.project.export.bg_color = self.btn_bg.color()
         self.doc.touch("节奏条参数")
@@ -941,12 +982,18 @@ class StylePanel(QWidget):
 
         box2b = QGroupBox("哑铃参数（判定点样式选「哑铃式」时生效）")
         f2b = QFormLayout(box2b)
-        self.sl_db_dipa = FloatSlider(0.50, 0.90, getattr(js, "db_dip_a", 0.74), 0.01, 2)
-        self.sl_db_dipa.setToolTip("动画 A（浅）：长条最低点的高度，越小越靠上")
-        self.sl_db_dipb = FloatSlider(0.80, 1.00, getattr(js, "db_dip_b", 0.95), 0.01, 2)
-        self.sl_db_dipb.setToolTip("动画 B（深）：长条最低点的高度，1.0 = 触到底边")
+        self.sl_db_len = FloatSlider(0.10, 0.45, getattr(js, "db_half_len", 0.31), 0.01, 2)
+        self.sl_db_len.setToolTip("哑铃长度：中轴到上下圆点的距离（相对条高）；始终以 Beat 中轴上下对称")
+        self.sl_db_gscale = FloatSlider(0.50, 2.00, getattr(js, "db_scale", 1.0), 0.05, 2)
+        self.sl_db_gscale.setToolTip("哑铃整体大小：圆点、胶囊、杆宽、长度一起缩放")
+        self.sl_db_dipa = FloatSlider(0.20, 1.20, getattr(js, "db_dip_a", 0.77), 0.01, 2)
+        self.sl_db_dipa.setToolTip("动画 A（浅）：胶囊最低点 = 中轴往下多少倍半长；1.0 正好到下圆点")
+        self.sl_db_dipb = FloatSlider(1.00, 2.20, getattr(js, "db_dip_b", 1.45), 0.01, 2)
+        self.sl_db_dipb.setToolTip("动画 B（深）：胶囊最低点；>1 表示穿过下圆点")
         self.sl_db_capw = FloatSlider(0.10, 0.50, getattr(js, "db_capsule_w", 0.26), 0.01, 2)
         self.sl_db_caph = FloatSlider(0.04, 0.24, getattr(js, "db_capsule_h", 0.10), 0.01, 2)
+        self.sl_db_cappop = FloatSlider(1.00, 2.00, getattr(js, "db_cap_pop", 1.16), 0.01, 2)
+        self.sl_db_cappop.setToolTip("命中到底部时胶囊自身的轻微膨胀倍率")
         self.sl_db_pop = FloatSlider(1.00, 3.00, getattr(js, "db_pop_scale", 1.65), 0.05, 2)
         self.sl_db_pop.setToolTip("动画 A：命中瞬间两侧圆点的膨胀倍率")
         self.sl_db_scale = FloatSlider(1.00, 1.60, getattr(js, "db_shake_scale", 1.12), 0.01, 2)
@@ -955,16 +1002,24 @@ class StylePanel(QWidget):
         self.sl_db_shake.setToolTip("动画 B：命中瞬间的抖动幅度（相对条高）")
         self.sl_db_rise = FloatSlider(0.30, 0.90, getattr(js, "db_rise_frac", 0.71), 0.01, 2)
         self.sl_db_rise.setToolTip("一个节拍内「上升」占的比例，剩下的是下落段")
-        for w in (self.sl_db_dipa, self.sl_db_dipb, self.sl_db_capw, self.sl_db_caph,
-                  self.sl_db_pop, self.sl_db_scale, self.sl_db_shake, self.sl_db_rise):
+        self.sl_db_gap = FloatSlider(0.30, 8.00, getattr(js, "db_idle_gap_ms", 1500.0) / 1000.0,
+                                     0.1, 1, " s")
+        self.sl_db_gap.setToolTip("距下一颗 Beat 超过这么久时，长条停止往复、静止在最低点")
+        for w in (self.sl_db_len, self.sl_db_gscale, self.sl_db_dipa, self.sl_db_dipb,
+                  self.sl_db_capw, self.sl_db_caph, self.sl_db_cappop, self.sl_db_pop,
+                  self.sl_db_scale, self.sl_db_shake, self.sl_db_rise, self.sl_db_gap):
             w.valueChanged.connect(self._apply)
-        f2b.addRow("A 浅下沉位置", self.sl_db_dipa)
-        f2b.addRow("B 深下沉位置", self.sl_db_dipb)
-        f2b.addRow("长条宽度/高度", _row(self.sl_db_capw, self.sl_db_caph))
+        f2b.addRow("哑铃长度", self.sl_db_len)
+        f2b.addRow("哑铃整体大小", self.sl_db_gscale)
+        f2b.addRow("A 浅下沉", self.sl_db_dipa)
+        f2b.addRow("B 深下沉", self.sl_db_dipb)
+        f2b.addRow("胶囊宽度/高度", _row(self.sl_db_capw, self.sl_db_caph))
+        f2b.addRow("胶囊膨胀", self.sl_db_cappop)
         f2b.addRow("A 圆点膨胀", self.sl_db_pop)
         f2b.addRow("B 整体放大", self.sl_db_scale)
         f2b.addRow("B 抖动幅度", self.sl_db_shake)
         f2b.addRow("上升占比", self.sl_db_rise)
+        f2b.addRow("空闲静止阈值", self.sl_db_gap)
         root.addWidget(box2b)
 
         gs = self.doc.project.theme.ghost
@@ -1027,14 +1082,18 @@ class StylePanel(QWidget):
         self.chk_idle.setChecked(bool(js.idle))
         i = self.cb_judge_mode.findData(str(getattr(js, "mode", "diamond")))
         self.cb_judge_mode.setCurrentIndex(max(0, i))
-        self.sl_db_dipa.setValue(getattr(js, "db_dip_a", 0.74))
-        self.sl_db_dipb.setValue(getattr(js, "db_dip_b", 0.95))
+        self.sl_db_len.setValue(getattr(js, "db_half_len", 0.31))
+        self.sl_db_gscale.setValue(getattr(js, "db_scale", 1.0))
+        self.sl_db_dipa.setValue(getattr(js, "db_dip_a", 0.77))
+        self.sl_db_dipb.setValue(getattr(js, "db_dip_b", 1.45))
         self.sl_db_capw.setValue(getattr(js, "db_capsule_w", 0.26))
         self.sl_db_caph.setValue(getattr(js, "db_capsule_h", 0.10))
+        self.sl_db_cappop.setValue(getattr(js, "db_cap_pop", 1.16))
         self.sl_db_pop.setValue(getattr(js, "db_pop_scale", 1.65))
         self.sl_db_scale.setValue(getattr(js, "db_shake_scale", 1.12))
         self.sl_db_shake.setValue(getattr(js, "db_shake_amp", 0.025))
         self.sl_db_rise.setValue(getattr(js, "db_rise_frac", 0.71))
+        self.sl_db_gap.setValue(getattr(js, "db_idle_gap_ms", 1500.0) / 1000.0)
         i = self.cb_judge_shape.findData(js.shape)
         self.cb_judge_shape.setCurrentIndex(max(0, i))
         self.lbl_judge_img.setText(os.path.basename(js.image) if js.image else tr("未设置"))
@@ -1101,14 +1160,18 @@ class StylePanel(QWidget):
         js.line_w = self.sl_jw.value()
         js.idle = self.chk_idle.isChecked()
         js.mode = self.cb_judge_mode.currentData()
+        js.db_half_len = self.sl_db_len.value()
+        js.db_scale = self.sl_db_gscale.value()
         js.db_dip_a = self.sl_db_dipa.value()
         js.db_dip_b = self.sl_db_dipb.value()
         js.db_capsule_w = self.sl_db_capw.value()
         js.db_capsule_h = self.sl_db_caph.value()
+        js.db_cap_pop = self.sl_db_cappop.value()
         js.db_pop_scale = self.sl_db_pop.value()
         js.db_shake_scale = self.sl_db_scale.value()
         js.db_shake_amp = self.sl_db_shake.value()
         js.db_rise_frac = self.sl_db_rise.value()
+        js.db_idle_gap_ms = self.sl_db_gap.value() * 1000.0
         js.shape = self.cb_judge_shape.currentData()
         js.idle_color = self.btn_idle.color()
         js.idle_scale = self.sl_idle_scale.value()

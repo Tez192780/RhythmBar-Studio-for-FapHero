@@ -98,24 +98,28 @@ class JudgeStyle:
     tint: float = 0.92            # 染色强度 0~1
     # ---------------------------------------------------------------- 哑铃样式
     # mode = "dumbbell" 时启用：上下两个圆点 + 细竖杆 + 沿杆上下滑动的横胶囊。
-    # 以下长度都相对条高 h；几何数值取自参考视频实测（1920×200）。
+    # 几何全部以 **Beat 中轴（音符所在的那一行）为原点、相对条高 h** 表达，
+    # 所以哑铃天然上下对称；改条带高度时整体等比缩放。
+    db_half_len: float = 0.31     # 中轴到上下圆点的距离（= 半个哑铃长度）
+    db_scale: float = 1.0         # 整体缩放（圆点、胶囊、杆宽、长度一起放大）
     db_circle_r: float = 0.040    # 圆点半径（实测直径 16 / 高 200）
-    db_top_y: float = 0.2575      # 上圆中心 y / h
-    db_bottom_y: float = 0.875    # 下圆中心 y / h
     db_handle_w: float = 0.016    # 竖杆粗细
     db_capsule_w: float = 0.260   # 胶囊宽（实测 52 / 200）
     db_capsule_h: float = 0.100   # 胶囊高（实测 20 / 200）
-    db_travel_top: float = 0.235  # 胶囊中心最高点 y / h（实测 47 / 200）
-    db_dip_a: float = 0.740       # A 浅下沉：胶囊最低点 y / h（实测 148 / 200）
-    db_dip_b: float = 0.950       # B 深下沉：胶囊最低点 y / h（实测 190 / 200）
+    db_travel_top: float = 0.85   # 胶囊最高点：中轴往上多少倍 half_len（0.85 → 略低于上圆点）
+    db_dip_a: float = 0.77        # A 浅下沉：中轴往下多少倍 half_len（1.0 = 下圆点）
+    db_dip_b: float = 1.45        # B 深下沉：穿过下圆点
     db_rise_frac: float = 0.71    # 一个节拍周期里「上升」占的比例（实测 0.33s / 0.468s）
     db_fall_ease: float = 0.85    # 下落段缓动指数（<1 = 前段更快）
     db_pop_scale: float = 1.65    # A：命中瞬间圆点膨胀倍率
     db_pop_ms: float = 160.0      # A：膨胀到回弹的总时长
+    db_cap_pop: float = 1.16      # 命中瞬间胶囊自身的轻微膨胀倍率
+    db_cap_pop_ms: float = 140.0  # 胶囊膨胀到回弹的总时长
     db_shake_scale: float = 1.12  # B：命中瞬间整体放大倍率
     db_shake_amp: float = 0.025   # B：抖动幅度（相对条高）
     db_shake_hz: float = 30.0     # B：抖动频率（Hz）
     db_shake_ms: float = 220.0    # B：放大+抖动持续时长
+    db_idle_gap_ms: float = 1500.0  # 距下一颗音符超过这么久就停止往复，静止在最低点
     db_ring: bool = False         # 命中扩散圈（参考视频里没有，默认关）
 
     def to_dict(self) -> dict:
@@ -124,9 +128,22 @@ class JudgeStyle:
     @staticmethod
     def from_dict(d: dict) -> "JudgeStyle":
         base = JudgeStyle()
-        for k, v in d.items():
+        legacy = "db_top_y" in (d or {})      # 1.1.1 接手初版：绝对 y 坐标、非对称
+        for k, v in (d or {}).items():
             if hasattr(base, k):
                 setattr(base, k, v)
+        if legacy:
+            # 旧参数是「相对条高的绝对 y」且整体偏下，换算成新的「以中轴 0.5 为原点 / half_len」。
+            try:
+                top = float(d.get("db_top_y", 0.2575))
+                bot = float(d.get("db_bottom_y", 0.875))
+                half = max(0.02, (bot - top) / 2.0)
+                base.db_half_len = half
+                base.db_travel_top = max(0.1, (0.5 - float(d.get("db_travel_top", 0.235))) / half)
+                base.db_dip_a = max(0.1, (float(d.get("db_dip_a", 0.74)) - 0.5) / half)
+                base.db_dip_b = max(0.2, (float(d.get("db_dip_b", 0.95)) - 0.5) / half)
+            except (TypeError, ValueError):
+                pass
         return base
 
 

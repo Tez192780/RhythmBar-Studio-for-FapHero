@@ -191,6 +191,8 @@ class RenderSettings:
     beat_counter: bool = False
     beat_counter_pos: str = "bottom_right"
     beat_counter_size: float = 0.14
+    beat_counter_color: str = "#ffffff"
+    beat_counter_alpha: float = 0.92
     beat_counter_mode: str = "notes"      # notes = 已命中音符数；beats = 按 BPM 的拍号
     beat_counter_label: str = "BEAT"
 

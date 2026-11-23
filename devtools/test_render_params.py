@@ -151,6 +151,33 @@ def main() -> int:
     shot.save(shot_path)
     print(f"\n预览图已写出: {shot_path}")
 
+    # ---------------------------------------------------- 条带尺寸（UI）
+    from rbar.settings import AppSettings
+    from rbar.ui.mainwindow import MainWindow
+
+    win = MainWindow(AppSettings())
+    try:
+        win.show()
+        panel = win.panel_chart
+        rs, ex = win.doc.project.render, win.doc.project.export
+        check("条带尺寸控件初值与 render 一致",
+              panel.sp_bar_w.value() == int(rs.width) and panel.sp_bar_h.value() == int(rs.height),
+              f"{panel.sp_bar_w.value()}x{panel.sp_bar_h.value()} vs {rs.width}x{rs.height}")
+        # 先让导出尺寸与条带一致，再改高度：导出应当跟随
+        ex.width, ex.height = int(rs.width), int(rs.height)
+        panel.sp_bar_h.setValue(200)
+        check("改条带高度后 render.height 更新", int(rs.height) == 200, str(rs.height))
+        check("导出尺寸原本一致时会跟随条带尺寸", int(ex.height) == 200, str(ex.height))
+        # 导出尺寸与条带不一致（用户自选）时不应被覆盖
+        ex.width, ex.height = 3840, 240
+        panel.sp_bar_h.setValue(160)
+        check("导出尺寸被用户改过时不被条带尺寸覆盖",
+              (int(ex.width), int(ex.height)) == (3840, 240), f"{ex.width}x{ex.height}")
+    finally:
+        win.hide()
+        win.shutdown()
+        del win
+
     print()
     if failures:
         print(f"结果: {len(failures)} 项失败 -> {', '.join(failures)}")
