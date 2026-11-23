@@ -101,6 +101,9 @@ class JudgeStyle:
     # 几何全部以 **Beat 中轴（音符所在的那一行）为原点、相对条高 h** 表达，
     # 所以哑铃天然上下对称；改条带高度时整体等比缩放。
     db_color: str = "#e9edf0"     # 哑铃本体颜色（常驻底色，命中时被音符颜色染）
+    db_outline_color: str = ""    # 描边色；空 = 跟随音符类型的描边色
+    db_outline_w: float = 1.0     # 描边宽度倍率（0 = 无描边）
+    db_outline_alpha: float = 1.0  # 描边透明度
     db_half_len: float = 0.31     # 中轴到上下圆点的距离（= 半个哑铃长度）
     db_scale: float = 1.0         # 整体缩放（圆点、胶囊、杆宽、长度一起放大）
     db_circle_r: float = 0.055    # 圆点半径（参考视频约 0.040，实机觉得偏小故默认调大）
@@ -130,6 +133,7 @@ class JudgeStyle:
     db_shake_scale: float = 1.12  # B：命中瞬间整体放大倍率
     db_shake_amp: float = 0.025   # B：抖动幅度（相对条高）
     db_shake_hz: float = 30.0     # B：抖动频率（Hz）
+    db_shake_dur_ms: float = 600.0  # B：抖动持续时间（衰减到 0 的时长）
     db_shake_ms: float = 320.0    # B：整体放大的整段时长（一半渐大 + 一半渐小）
     db_tint_ramp_ms: float = 140.0  # 变色渐入：命中前多久开始向该 Beat 的颜色过渡
     db_idle_gap_ms: float = 1500.0  # 距下一颗音符超过这么久就停止往复，静止在最高点
@@ -208,12 +212,37 @@ def default_styles() -> dict[str, NoteStyle]:
 
 
 @dataclass
+class AxisStyle:
+    """横向中轴线：属于基础设置，无论用哪种判定区样式都会画在画面正中。"""
+
+    enabled: bool = True
+    width: float = 0.012          # 线宽，相对条高
+    color: str = "#ffffff"
+    alpha: float = 0.20
+    outline_w: float = 0.0        # 描边宽度（0 = 不描边）
+    outline_color: str = "#141a20"
+    outline_alpha: float = 0.6
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(d: dict) -> "AxisStyle":
+        base = AxisStyle()
+        for k, v in (d or {}).items():
+            if hasattr(base, k):
+                setattr(base, k, v)
+        return base
+
+
+@dataclass
 class Theme:
     styles: dict[str, NoteStyle] = field(default_factory=default_styles)
     order: list[str] = field(default_factory=lambda: ["cyan", "magenta", "gray"])
     plate: PlateStyle = field(default_factory=PlateStyle)
     judge: JudgeStyle = field(default_factory=JudgeStyle)
     ghost: GhostStyle = field(default_factory=GhostStyle)
+    axis: AxisStyle = field(default_factory=AxisStyle)
 
     # ---------------------------------------------------------------- 便捷访问
     def style(self, key: str) -> NoteStyle:
@@ -237,6 +266,7 @@ class Theme:
             "plate": self.plate.to_dict(),
             "judge": self.judge.to_dict(),
             "ghost": self.ghost.to_dict(),
+            "axis": self.axis.to_dict(),
         }
 
     @staticmethod
@@ -251,6 +281,7 @@ class Theme:
         t.plate = PlateStyle.from_dict(d.get("plate", {}))
         t.judge = JudgeStyle.from_dict(d.get("judge", {}))
         t.ghost = GhostStyle.from_dict(d.get("ghost", {}))
+        t.axis = AxisStyle.from_dict(d.get("axis", {}))
         return t
 
     def clone(self) -> "Theme":

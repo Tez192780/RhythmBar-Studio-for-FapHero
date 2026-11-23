@@ -1057,6 +1057,21 @@ class StylePanel(QWidget):
         self.cb_db_ease.currentIndexChanged.connect(self._apply)
         self.sl_db_easestr = FloatSlider(0.0, 1.0, getattr(js, "db_ease_strength", 0.7), 0.01, 2)
         self.sl_db_easestr.setToolTip("缓入缓出的强度：0 = 等同于匀速，1 = 最明显的减速")
+        self.sl_db_shakehz = FloatSlider(4.0, 60.0, getattr(js, "db_shake_hz", 30.0), 1.0, 1, " Hz")
+        self.sl_db_shakehz.setToolTip("B：抖动的频率，越低越晃、越高越碎")
+        self.sl_db_shakedur = FloatSlider(0.10, 2.00, getattr(js, "db_shake_dur_ms", 600.0) / 1000.0, 0.05, 2, " s")
+        self.sl_db_shakedur.setToolTip("B：抖动持续多久（从命中开始衰减到 0）")
+        self.btn_dboutline = ColorButton(str(getattr(js, "db_outline_color", "") or "#141a20"))
+        self.btn_dboutline.setToolTip("哑铃与胶囊的描边颜色")
+        self.btn_dboutline.colorChanged.connect(self._apply)
+        self.chk_dboutline_auto = QCheckBox("描边跟随音符色")
+        self.chk_dboutline_auto.setToolTip("勾选时描边用各音符类型自己的描边色，忽略上面的颜色")
+        self.chk_dboutline_auto.setChecked(not str(getattr(js, "db_outline_color", "") or ""))
+        self.chk_dboutline_auto.toggled.connect(self._apply)
+        self.sl_dboutw = FloatSlider(0.0, 3.0, getattr(js, "db_outline_w", 1.0), 0.05, 2, "×")
+        self.sl_dboutw.setToolTip("描边宽度倍率，0 = 不描边")
+        self.sl_dbouta = FloatSlider(0.0, 1.0, getattr(js, "db_outline_alpha", 1.0), 0.01, 2)
+        self.sl_dbouta.setToolTip("描边透明度")
         for w in (self.sl_db_circle, self.sl_db_len, self.sl_db_gscale, self.sl_db_dipa,
                   self.sl_db_dipb, self.sl_db_dipc, self.sl_db_capw, self.sl_db_caph,
                   self.sl_db_cappop, self.sl_db_pop, self.sl_db_scale, self.sl_db_shake,
@@ -1064,7 +1079,9 @@ class StylePanel(QWidget):
                   self.sl_db_cappopms, self.sl_db_top, self.sl_db_topa,
                   self.sl_db_topb, self.sl_db_topc, self.sl_db_popms,
                   self.sl_db_shakems, self.sl_db_tintramp, self.sl_db_capa,
-                  self.sl_db_capb, self.sl_db_capc, self.sl_db_easestr):
+                  self.sl_db_capb, self.sl_db_capc, self.sl_db_easestr,
+                  self.sl_db_shakehz, self.sl_db_shakedur, self.sl_dboutw,
+                  self.sl_dbouta):
             w.valueChanged.connect(self._apply)
         f2b.addRow("哑铃长度", self.sl_db_len)
         f2b.addRow("哑铃整体大小", self.sl_db_gscale)
@@ -1092,7 +1109,36 @@ class StylePanel(QWidget):
         f2b.addRow("", self.sl_db_capc)
         f2b.addRow("运动缓动", self.cb_db_ease)
         f2b.addRow("缓动强度", self.sl_db_easestr)
+        f2b.addRow("抖动频率", self.sl_db_shakehz)
+        f2b.addRow("抖动时长", self.sl_db_shakedur)
+        f2b.addRow("描边颜色", _row(self.btn_dboutline, self.chk_dboutline_auto))
+        f2b.addRow("描边宽度/透明度", _row(self.sl_dboutw, self.sl_dbouta))
         root.addWidget(box2b)
+
+        ax = self.doc.project.theme.axis
+        box2c = QGroupBox("横向中轴线（基础设置，所有判定区样式都生效）")
+        f2c = QFormLayout(box2c)
+        self.chk_ax = QCheckBox("显示轴线")
+        self.chk_ax.setChecked(bool(getattr(ax, "enabled", True)))
+        self.chk_ax.toggled.connect(self._apply)
+        self.sl_axw = FloatSlider(0.000, 0.120, getattr(ax, "width", 0.012), 0.002, 3)
+        self.sl_axw.setToolTip("线宽，相对条高")
+        self.sl_axa = FloatSlider(0.0, 1.0, getattr(ax, "alpha", 0.20), 0.01, 2)
+        self.btn_axc = ColorButton(str(getattr(ax, "color", "#ffffff")))
+        self.btn_axc.colorChanged.connect(self._apply)
+        self.sl_axow = FloatSlider(0.000, 0.060, getattr(ax, "outline_w", 0.0), 0.002, 3)
+        self.sl_axow.setToolTip("描边宽度；0 = 不描边")
+        self.sl_axoa = FloatSlider(0.0, 1.0, getattr(ax, "outline_alpha", 0.6), 0.01, 2)
+        self.btn_axoc = ColorButton(str(getattr(ax, "outline_color", "#141a20")))
+        self.btn_axoc.colorChanged.connect(self._apply)
+        for w in (self.sl_axw, self.sl_axa, self.sl_axow, self.sl_axoa):
+            w.valueChanged.connect(self._apply)
+        f2c.addRow("", self.chk_ax)
+        f2c.addRow("线宽/透明度", _row(self.sl_axw, self.sl_axa))
+        f2c.addRow("线条颜色", self.btn_axc)
+        f2c.addRow("描边宽度/透明度", _row(self.sl_axow, self.sl_axoa))
+        f2c.addRow("描边颜色", self.btn_axoc)
+        root.addWidget(box2c)
 
         gs = self.doc.project.theme.ghost
         box3 = QGroupBox("命中后残影（判定点左侧那串灰块）")
@@ -1186,6 +1232,19 @@ class StylePanel(QWidget):
         i = self.cb_db_ease.findData(str(getattr(js, "db_ease_mode", "both")))
         self.cb_db_ease.setCurrentIndex(max(0, i))
         self.sl_db_easestr.setValue(getattr(js, "db_ease_strength", 0.7))
+        self.sl_db_shakehz.setValue(getattr(js, "db_shake_hz", 30.0))
+        self.sl_db_shakedur.setValue(getattr(js, "db_shake_dur_ms", 600.0) / 1000.0)
+        self.btn_dboutline.setColor(str(getattr(js, "db_outline_color", "") or "#141a20"))
+        self.chk_dboutline_auto.setChecked(not str(getattr(js, "db_outline_color", "") or ""))
+        self.sl_dboutw.setValue(getattr(js, "db_outline_w", 1.0))
+        self.sl_dbouta.setValue(getattr(js, "db_outline_alpha", 1.0))
+        self.chk_ax.setChecked(bool(getattr(self.doc.project.theme.axis, "enabled", True)))
+        self.sl_axw.setValue(getattr(self.doc.project.theme.axis, "width", 0.012))
+        self.sl_axa.setValue(getattr(self.doc.project.theme.axis, "alpha", 0.20))
+        self.btn_axc.setColor(str(getattr(self.doc.project.theme.axis, "color", "#ffffff")))
+        self.sl_axow.setValue(getattr(self.doc.project.theme.axis, "outline_w", 0.0))
+        self.sl_axoa.setValue(getattr(self.doc.project.theme.axis, "outline_alpha", 0.6))
+        self.btn_axoc.setColor(str(getattr(self.doc.project.theme.axis, "outline_color", "#141a20")))
         self._sync_cap_split()
         self._sync_top_split()
         i = self.cb_judge_shape.findData(js.shape)
@@ -1299,6 +1358,20 @@ class StylePanel(QWidget):
         js.db_cap_pop_c = self.sl_db_capc.value()
         js.db_ease_mode = self.cb_db_ease.currentData()
         js.db_ease_strength = self.sl_db_easestr.value()
+        js.db_shake_hz = self.sl_db_shakehz.value()
+        js.db_shake_dur_ms = self.sl_db_shakedur.value() * 1000.0
+        js.db_outline_color = ("" if self.chk_dboutline_auto.isChecked()
+                               else self.btn_dboutline.color())
+        js.db_outline_w = self.sl_dboutw.value()
+        js.db_outline_alpha = self.sl_dbouta.value()
+        ax = self.doc.project.theme.axis
+        ax.enabled = self.chk_ax.isChecked()
+        ax.width = self.sl_axw.value()
+        ax.alpha = self.sl_axa.value()
+        ax.color = self.btn_axc.color()
+        ax.outline_w = self.sl_axow.value()
+        ax.outline_alpha = self.sl_axoa.value()
+        ax.outline_color = self.btn_axoc.color()
         js.shape = self.cb_judge_shape.currentData()
         js.idle_color = self.btn_idle.color()
         js.idle_scale = self.sl_idle_scale.value()
