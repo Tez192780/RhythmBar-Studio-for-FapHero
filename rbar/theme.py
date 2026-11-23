@@ -31,6 +31,9 @@ class NoteStyle:
     size: float = 1.0            # 相对 render.note_size 的倍率
     glow: float = 0.0            # 0..1 外发光强度
     image: str = ""              # 自定义图像皮肤；空 = 使用 shape
+    # 哑铃判定点下，这个类型命中时用哪种反馈动画：
+    #   auto = 按 size 自动（大 → B，小 → A）；"A" = 浅下沉（圆点膨胀）；"B" = 深下沉（整体放大+抖动）
+    feedback: str = "auto"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -85,6 +88,7 @@ class JudgeStyle:
     pulse_strength: float = 0.5
     ring: bool = True             # 命中扩散圈
     # --- 常驻判定菱形（参考图里判定点上那枚灰白菱形）
+    mode: str = "diamond"         # diamond（原样式）| dumbbell（哑铃样式，见下方参数）
     idle: bool = True
     idle_color: str = "#e9edf0"   # 常驻颜色（灰白）
     idle_scale: float = 1.06      # 相对音符半径
@@ -92,6 +96,27 @@ class JudgeStyle:
     image: str = ""               # 自定义图像皮肤；空 = 使用 shape
     flash_ms: float = 260.0       # 命中后染色闪烁持续多久
     tint: float = 0.92            # 染色强度 0~1
+    # ---------------------------------------------------------------- 哑铃样式
+    # mode = "dumbbell" 时启用：上下两个圆点 + 细竖杆 + 沿杆上下滑动的横胶囊。
+    # 以下长度都相对条高 h；几何数值取自参考视频实测（1920×200）。
+    db_circle_r: float = 0.040    # 圆点半径（实测直径 16 / 高 200）
+    db_top_y: float = 0.2575      # 上圆中心 y / h
+    db_bottom_y: float = 0.875    # 下圆中心 y / h
+    db_handle_w: float = 0.016    # 竖杆粗细
+    db_capsule_w: float = 0.260   # 胶囊宽（实测 52 / 200）
+    db_capsule_h: float = 0.100   # 胶囊高（实测 20 / 200）
+    db_travel_top: float = 0.235  # 胶囊中心最高点 y / h（实测 47 / 200）
+    db_dip_a: float = 0.740       # A 浅下沉：胶囊最低点 y / h（实测 148 / 200）
+    db_dip_b: float = 0.950       # B 深下沉：胶囊最低点 y / h（实测 190 / 200）
+    db_rise_frac: float = 0.71    # 一个节拍周期里「上升」占的比例（实测 0.33s / 0.468s）
+    db_fall_ease: float = 0.85    # 下落段缓动指数（<1 = 前段更快）
+    db_pop_scale: float = 1.65    # A：命中瞬间圆点膨胀倍率
+    db_pop_ms: float = 160.0      # A：膨胀到回弹的总时长
+    db_shake_scale: float = 1.12  # B：命中瞬间整体放大倍率
+    db_shake_amp: float = 0.025   # B：抖动幅度（相对条高）
+    db_shake_hz: float = 30.0     # B：抖动频率（Hz）
+    db_shake_ms: float = 220.0    # B：放大+抖动持续时长
+    db_ring: bool = False         # 命中扩散圈（参考视频里没有，默认关）
 
     def to_dict(self) -> dict:
         return asdict(self)

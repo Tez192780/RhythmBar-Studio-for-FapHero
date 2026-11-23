@@ -205,6 +205,14 @@ class NoteTypePanel(QWidget):
         self.sl_glow.valueChanged.connect(self._apply_glow)
         self.sl_ow = FloatSlider(0.0, 0.3, 0.10, 0.005, 3)
         self.sl_ow.valueChanged.connect(self._apply_ow)
+        self.cb_feedback = QComboBox()
+        self.cb_feedback.addItem("自动（按大小建议）", "auto")
+        self.cb_feedback.addItem("A · 浅下沉（圆点膨胀）", "A")
+        self.cb_feedback.addItem("B · 深下沉（放大+抖动）", "B")
+        self.cb_feedback.setToolTip(
+            "仅哑铃判定点生效：这类音符命中时，长条下沉到浅处还是深处、"
+            "以及用哪种命中反馈动画。默认按尺寸给建议，可手动指定。")
+        self.cb_feedback.currentIndexChanged.connect(self._apply_feedback)
         self.btn_img = QPushButton("导入图像…")
         self.btn_img_clear = QPushButton("恢复形状")
         self.lbl_img = QLabel("未设置")
@@ -218,6 +226,7 @@ class NoteTypePanel(QWidget):
         form.addRow("大小", self.sl_size)
         form.addRow("描边宽", self.sl_ow)
         form.addRow("外发光", self.sl_glow)
+        form.addRow("命中反馈", self.cb_feedback)
         form.addRow("图像皮肤", _row(self.btn_img, self.btn_img_clear))
         form.addRow("", self.lbl_img)
         root.addWidget(box)
@@ -280,6 +289,8 @@ class NoteTypePanel(QWidget):
         self.sl_size.setValue(st.size)
         self.sl_ow.setValue(st.outline_w)
         self.sl_glow.setValue(st.glow)
+        i = self.cb_feedback.findData(str(getattr(st, "feedback", "auto") or "auto"))
+        self.cb_feedback.setCurrentIndex(max(0, i))
         self.lbl_img.setText(os.path.basename(st.image) if st.image else tr("未设置"))
         self._loading = False
 
@@ -345,6 +356,10 @@ class NoteTypePanel(QWidget):
 
     def _apply_glow(self) -> None:
         self._apply(lambda st: setattr(st, "glow", self.sl_glow.value()))
+
+    def _apply_feedback(self) -> None:
+        kind = self.cb_feedback.currentData()
+        self._apply(lambda st: setattr(st, "feedback", kind))
 
     def _pick_image(self) -> None:
         path = choose_skin_image(self)
@@ -861,6 +876,14 @@ class StylePanel(QWidget):
         js = self.doc.project.theme.judge
         box2 = QGroupBox("判定点")
         f2 = QFormLayout(box2)
+        self.cb_judge_mode = QComboBox()
+        self.cb_judge_mode.addItem("菱形式（原样）", "diamond")
+        self.cb_judge_mode.addItem("哑铃式（新，随 Beat 滑动）", "dumbbell")
+        self.cb_judge_mode.setToolTip(
+            "哑铃式：上下两个圆点 + 竖杆 + 一根随 Beat 上下滑动的长条，"
+            "到达最低点时正好是 Beat 命中判定区的瞬间")
+        self.cb_judge_mode.currentIndexChanged.connect(self._apply)
+        f2.addRow("判定点样式", self.cb_judge_mode)
         self.sl_jline = FloatSlider(0.0, 1.0, js.line_alpha, 0.01, 2)
         self.sl_jline.valueChanged.connect(self._apply)
         self.sl_jw = FloatSlider(0.0, 0.2, js.line_w, 0.005, 3)
@@ -915,6 +938,34 @@ class StylePanel(QWidget):
         f2.addRow("", self.chk_ring)
         f2.addRow("高亮光晕", self.sl_glow)
         root.addWidget(box2)
+
+        box2b = QGroupBox("哑铃参数（判定点样式选「哑铃式」时生效）")
+        f2b = QFormLayout(box2b)
+        self.sl_db_dipa = FloatSlider(0.50, 0.90, getattr(js, "db_dip_a", 0.74), 0.01, 2)
+        self.sl_db_dipa.setToolTip("动画 A（浅）：长条最低点的高度，越小越靠上")
+        self.sl_db_dipb = FloatSlider(0.80, 1.00, getattr(js, "db_dip_b", 0.95), 0.01, 2)
+        self.sl_db_dipb.setToolTip("动画 B（深）：长条最低点的高度，1.0 = 触到底边")
+        self.sl_db_capw = FloatSlider(0.10, 0.50, getattr(js, "db_capsule_w", 0.26), 0.01, 2)
+        self.sl_db_caph = FloatSlider(0.04, 0.24, getattr(js, "db_capsule_h", 0.10), 0.01, 2)
+        self.sl_db_pop = FloatSlider(1.00, 3.00, getattr(js, "db_pop_scale", 1.65), 0.05, 2)
+        self.sl_db_pop.setToolTip("动画 A：命中瞬间两侧圆点的膨胀倍率")
+        self.sl_db_scale = FloatSlider(1.00, 1.60, getattr(js, "db_shake_scale", 1.12), 0.01, 2)
+        self.sl_db_scale.setToolTip("动画 B：命中瞬间整体的放大倍率")
+        self.sl_db_shake = FloatSlider(0.000, 0.080, getattr(js, "db_shake_amp", 0.025), 0.002, 3)
+        self.sl_db_shake.setToolTip("动画 B：命中瞬间的抖动幅度（相对条高）")
+        self.sl_db_rise = FloatSlider(0.30, 0.90, getattr(js, "db_rise_frac", 0.71), 0.01, 2)
+        self.sl_db_rise.setToolTip("一个节拍内「上升」占的比例，剩下的是下落段")
+        for w in (self.sl_db_dipa, self.sl_db_dipb, self.sl_db_capw, self.sl_db_caph,
+                  self.sl_db_pop, self.sl_db_scale, self.sl_db_shake, self.sl_db_rise):
+            w.valueChanged.connect(self._apply)
+        f2b.addRow("A 浅下沉位置", self.sl_db_dipa)
+        f2b.addRow("B 深下沉位置", self.sl_db_dipb)
+        f2b.addRow("长条宽度/高度", _row(self.sl_db_capw, self.sl_db_caph))
+        f2b.addRow("A 圆点膨胀", self.sl_db_pop)
+        f2b.addRow("B 整体放大", self.sl_db_scale)
+        f2b.addRow("B 抖动幅度", self.sl_db_shake)
+        f2b.addRow("上升占比", self.sl_db_rise)
+        root.addWidget(box2b)
 
         gs = self.doc.project.theme.ghost
         box3 = QGroupBox("命中后残影（判定点左侧那串灰块）")
@@ -974,6 +1025,16 @@ class StylePanel(QWidget):
         self.sl_jline.setValue(js.line_alpha)
         self.sl_jw.setValue(js.line_w)
         self.chk_idle.setChecked(bool(js.idle))
+        i = self.cb_judge_mode.findData(str(getattr(js, "mode", "diamond")))
+        self.cb_judge_mode.setCurrentIndex(max(0, i))
+        self.sl_db_dipa.setValue(getattr(js, "db_dip_a", 0.74))
+        self.sl_db_dipb.setValue(getattr(js, "db_dip_b", 0.95))
+        self.sl_db_capw.setValue(getattr(js, "db_capsule_w", 0.26))
+        self.sl_db_caph.setValue(getattr(js, "db_capsule_h", 0.10))
+        self.sl_db_pop.setValue(getattr(js, "db_pop_scale", 1.65))
+        self.sl_db_scale.setValue(getattr(js, "db_shake_scale", 1.12))
+        self.sl_db_shake.setValue(getattr(js, "db_shake_amp", 0.025))
+        self.sl_db_rise.setValue(getattr(js, "db_rise_frac", 0.71))
         i = self.cb_judge_shape.findData(js.shape)
         self.cb_judge_shape.setCurrentIndex(max(0, i))
         self.lbl_judge_img.setText(os.path.basename(js.image) if js.image else tr("未设置"))
@@ -1039,6 +1100,15 @@ class StylePanel(QWidget):
         js.line_alpha = self.sl_jline.value()
         js.line_w = self.sl_jw.value()
         js.idle = self.chk_idle.isChecked()
+        js.mode = self.cb_judge_mode.currentData()
+        js.db_dip_a = self.sl_db_dipa.value()
+        js.db_dip_b = self.sl_db_dipb.value()
+        js.db_capsule_w = self.sl_db_capw.value()
+        js.db_capsule_h = self.sl_db_caph.value()
+        js.db_pop_scale = self.sl_db_pop.value()
+        js.db_shake_scale = self.sl_db_scale.value()
+        js.db_shake_amp = self.sl_db_shake.value()
+        js.db_rise_frac = self.sl_db_rise.value()
         js.shape = self.cb_judge_shape.currentData()
         js.idle_color = self.btn_idle.color()
         js.idle_scale = self.sl_idle_scale.value()

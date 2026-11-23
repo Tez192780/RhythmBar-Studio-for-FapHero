@@ -443,6 +443,9 @@ class BarRenderer:
 
     def _draw_judge(self, p: QPainter, w: float, h: float, t_ms: float) -> None:
         js: JudgeStyle = self.th.judge
+        if str(getattr(js, "mode", "diamond")) == "dumbbell":
+            self._draw_judge_dumbbell(p, w, h, t_ms)
+            return
         jx = self.judge_x(w)
         pulse = self._judge_pulse(t_ms)
         if js.line_alpha > 0 or pulse > 0:
@@ -483,6 +486,195 @@ class BarRenderer:
         if best_hit is not None:
             return best_hit, best_hit_dt
         return best_future, best_future_dt
+
+    # ------------------------------------------------------- 哑铃判定点（新样式）
+    def _feedback_kind(self, st: NoteStyle | None) -> str:
+        """这个音符类型在哑铃判定点上用 A（浅）还是 B（深）反馈。
+
+        auto = 按尺寸给个建议：明显比默认大（size ≥ 1.2）用 B，否则 A。
+        尺寸只是默认建议，用户可以在「音符类型」面板里对每种类型手动指定 A/B。
+        """
+        if st is None:
+            return "A"
+        want = str(getattr(st, "feedback", "auto") or "auto").upper()
+        if want in ("A", "B"):
+            return want
+        return "B" if float(getattr(st, "size", 1.0)) >= 1.2 else "A"
+
+    def _anchor_notes(self, t_ms: float) -> tuple[Note | None, Note | None]:
+        """当前时间前后最近的两颗音符（用于把胶囊相位锚在「Beat 到达」上）。"""
+        prev_note = next_note = None
+        for n in self.p.chart.near(t_ms, 4000.0):
+            if n.t <= t_ms:
+                if prev_note is None or n.t > prev_note.t:
+                    prev_note = n
+            else:
+                if next_note is None or n.t < next_note.t:
+                    next_note = n
+        return prev_note, next_note
+
+    def _judge_phase(self, t_ms: float) -> tuple[float, Note | None, Note | None]:
+        """返回 (相位 0..1, 上一颗音符, 下一颗音符)。
+
+        相位 0 = 上一颗音符刚到达判定点（胶囊最低点），相位 1 = 下一颗到达。
+        优先以音符为锚：这样「最低点 = Beat 到达」永远成立，哪怕音符不在拍网格上。
+        附近没有音符时退回 BPM 拍网格，保证空档里长条也不会静止。
+        """
+        prev_note, next_note = self._anchor_notes(t_ms)
+        if prev_note is not None and next_note is not None:
+            span = float(next_note.t) - float(prev_note.t)
+            if 1.0 <= span <= 8000.0:
+                return (t_ms - prev_note.t) / span, prev_note, next_note
+        # 回退：拍网格
+        clip = self.p.audio_clip_at(t_ms)
+        if clip is not None:
+            tm = clip.timemap
+            b = tm.beat(clip.timeline_to_source(t_ms))
+            base = math.floor(b)
+            t_cur = clip.source_to_timeline(tm.ms(base))
+            t_next = clip.source_to_timeline(tm.ms(base + 1.0))
+        else:
+            tm = self.p.chart.timemap
+            b = tm.beat(t_ms)
+            base = math.floor(b)
+            t_cur = tm.ms(base)
+            t_next = tm.ms(base + 1.0)
+        span = float(t_next) - float(t_cur)
+        frac = 0.0 if span <= 0 else max(0.0, min(1.0, (t_ms - t_cur) / span))
+        return frac, None, None
+
+    def _dip_of(self, note: Note | None) -> float:
+        """某颗音符对应的胶囊最低点（相对条高）。"""
+        js: JudgeStyle = self.th.judge
+        if note is None:
+            return float(getattr(js, "db_dip_a", 0.74))
+        st = self.th.styles.get(note.type)
+        if st is None:
+            st = NoteStyle(key=note.type, name=note.type)
+        if self._feedback_kind(st) == "B":
+            return float(getattr(js, "db_dip_b", 0.95))
+        return float(getattr(js, "db_dip_a", 0.74))
+
+    def _capsule_ynorm(self, t_ms: float) -> float:
+        """胶囊中心高度（相对条高）：缓升 + 加速下落，音符到达时正好到最低点。"""
+        js: JudgeStyle = self.th.judge
+        frac, prev_note, next_note = self._judge_phase(t_ms)
+        rise = max(0.05, min(0.95, float(getattr(js, "db_rise_frac", 0.71))))
+        top = float(getattr(js, "db_travel_top", 0.235))
+        if frac < rise:
+            dip = self._dip_of(prev_note)       # 刚从上一颗音符的最低点往上走
+            u = frac / rise
+            k = u * u * (3.0 - 2.0 * u)         # smoothstep：起步与到顶都变慢
+            return dip + (top - dip) * k
+        dip = self._dip_of(next_note)           # 正在砸向下一颗音符的最低点
+        u = (frac - rise) / (1.0 - rise)
+        k = u ** max(0.2, float(getattr(js, "db_fall_ease", 0.85)))
+        return top + (dip - top) * k
+
+    def _dumbbell_feedback(self, st: NoteStyle | None, dt: float, h: float,
+                           hit: bool) -> tuple[float, float, float, float]:
+        """命中瞬间的形变，返回 (圆点膨胀倍率, 整体缩放, x 偏移, y 偏移)。
+
+        A（浅下沉）：只膨胀两侧圆点；
+        B（深下沉）：整体放大 + 短暂颤抖。
+        抽成纯函数，既方便单独测试，也让绘制代码只负责画。
+        """
+        js: JudgeStyle = self.th.judge
+        if not hit:
+            return 1.0, 1.0, 0.0, 0.0
+        kind = self._feedback_kind(st)
+        if kind == "A":
+            total = float(getattr(js, "db_pop_ms", 160.0))
+            if total <= 0:
+                return 1.0, 1.0, 0.0, 0.0
+            u = min(1.0, max(0.0, dt / total))
+            pop = 1.0 + (float(getattr(js, "db_pop_scale", 1.65)) - 1.0) * math.sin(math.pi * u)
+            return pop, 1.0, 0.0, 0.0
+        total = float(getattr(js, "db_shake_ms", 220.0))
+        if total <= 0:
+            return 1.0, 1.0, 0.0, 0.0
+        u = min(1.0, max(0.0, dt / total))
+        scale = 1.0 + (float(getattr(js, "db_shake_scale", 1.12)) - 1.0) * math.sin(math.pi * u)
+        amp = float(getattr(js, "db_shake_amp", 0.025)) * h * (1.0 - u) ** 1.5
+        ph = 2.0 * math.pi * float(getattr(js, "db_shake_hz", 30.0)) * dt / 1000.0
+        return 1.0, scale, amp * math.sin(ph), amp * 0.55 * math.sin(ph * 1.7 + 0.9)
+
+    def _draw_judge_dumbbell(self, p: QPainter, w: float, h: float, t_ms: float) -> None:
+        """哑铃判定点：上下圆点 + 细竖杆 + 沿杆滑动的横胶囊。
+
+        命中反馈分两种（由音符类型的 feedback 决定）：
+          A 浅下沉：胶囊只到中下部，命中瞬间「两侧圆点膨胀一下再回弹」；
+          B 深下沉：胶囊穿过下方圆点，命中瞬间「整体放大 + 短暂颤抖」。
+        """
+        js: JudgeStyle = self.th.judge
+        jx = self.judge_x(w)
+        n, dt = self._judge_target(t_ms)
+        st = self.th.styles.get(n.type) if n is not None else None
+        if n is not None and st is None:
+            st = NoteStyle(key=n.type, name=n.type)
+
+        # 命中染色：命中瞬间按该音符颜色染，然后衰减回常驻色
+        k = 0.0
+        hit = n is not None and 0.0 <= dt <= float(js.flash_ms)
+        if hit and js.flash:
+            k = (1.0 - dt / max(1.0, float(js.flash_ms))) * max(0.0, min(1.0, float(js.tint)))
+        idle = qc(js.idle_color)
+        color = mix(idle, qc(st.color), k) if (st is not None and k > 0.001) else idle
+        outline = qc(st.outline if st is not None else "#141a20")
+
+        # 命中瞬间的形变（数学部分见 _dumbbell_feedback）
+        pop_circle, scale, dx, dy = (
+            self._dumbbell_feedback(st, dt, h, hit) if hit else (1.0, 1.0, 0.0, 0.0))
+        cy = h * 0.5
+        p.save()
+        p.translate(jx + dx, cy + dy)
+        p.scale(scale, scale)
+        p.translate(-jx, -cy)
+
+        r_c = max(1.0, float(getattr(js, "db_circle_r", 0.040)) * h)
+        y_top = float(getattr(js, "db_top_y", 0.2575)) * h
+        y_bot = float(getattr(js, "db_bottom_y", 0.875)) * h
+        cw = max(2.0, float(getattr(js, "db_capsule_w", 0.26)) * h)
+        ch = max(2.0, float(getattr(js, "db_capsule_h", 0.10)) * h)
+        hw = max(1.0, float(getattr(js, "db_handle_w", 0.016)) * h)
+
+        # 竖杆：参考视频里是「空心细杆」——深色杆身 + 两根浅色细线
+        pen = QPen(outline, hw * 2.2)
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        p.drawLine(QPointF(jx, y_top), QPointF(jx, y_bot))
+        off = hw * 0.55
+        pen = QPen(color, max(0.6, hw * 0.5))
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        for s in (-1.0, 1.0):
+            p.drawLine(QPointF(jx + s * off, y_top + r_c), QPointF(jx + s * off, y_bot - r_c))
+
+        # 滑动的横胶囊
+        yn = self._capsule_ynorm(t_ms)
+        cap_y = min(h - ch * 0.5, max(ch * 0.5, yn * h))
+        rect = QRectF(jx - cw * 0.5, cap_y - ch * 0.5, cw, ch)
+        path = QPainterPath()
+        path.addRoundedRect(rect, ch * 0.5, ch * 0.5)
+        p.setPen(QPen(outline, max(1.0, ch * 0.16)))
+        p.setBrush(QBrush(color))
+        p.drawPath(path)
+
+        # 上下圆点（A 反馈时在命中瞬间膨胀）
+        rr = r_c * pop_circle
+        p.setPen(QPen(outline, max(1.0, r_c * 0.30)))
+        p.setBrush(QBrush(color))
+        p.drawEllipse(QPointF(jx, y_top), rr, rr)
+        p.drawEllipse(QPointF(jx, y_bot), rr, rr)
+
+        # 命中扩散圈
+        if hit and k > 0.02 and bool(getattr(js, "db_ring", True)) and st is not None:
+            rad = cw * (0.55 + 0.55 * (1.0 - k))
+            pen = QPen(qc(st.color, 0.5 * k), max(1.0, cw * 0.03))
+            p.setPen(pen)
+            p.setBrush(Qt.NoBrush)
+            p.drawEllipse(QPointF(jx, cap_y), rad, rad)
+        p.restore()
 
     def _draw_judge_diamond(self, p: QPainter, w: float, h: float, t_ms: float) -> None:
         """常驻的 45° 灰白菱形；音符命中后按该音符颜色闪一下。"""
