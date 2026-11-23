@@ -1027,13 +1027,29 @@ class StylePanel(QWidget):
         self.sl_db_gap.setToolTip("距下一颗 Beat 超过这么久时，长条停止往复、静止在最高点")
         self.sl_db_glide = FloatSlider(0.00, 2.00, getattr(js, "db_idle_glide_ms", 400.0) / 1000.0, 0.05, 2, " s")
         self.sl_db_glide.setToolTip("进出空闲时，长条从当前位置平滑滑到目标位置所用的时间（0 = 直接跳）")
-        self.sl_db_cappopms = FloatSlider(0.04, 0.60, getattr(js, "db_cap_pop_ms", 140.0) / 1000.0, 0.01, 2, " s")
-        self.sl_db_cappopms.setToolTip("命中瞬间胶囊从最大膨胀回落到原尺寸的时间")
+        self.sl_db_cappopms = FloatSlider(0.10, 1.20, getattr(js, "db_cap_pop_ms", 280.0) / 1000.0, 0.02, 2, " s")
+        self.sl_db_cappopms.setToolTip("胶囊膨胀的整段时长（命中前一半渐大、命中后一半渐小）")
+        self.sl_db_top = FloatSlider(0.40, 1.20, getattr(js, "db_travel_top", 0.85), 0.01, 2)
+        self.sl_db_top.setToolTip("胶囊常态最高点（也是空闲停留位置），相对半个哑铃长度")
+        self.chk_db_topsplit = QCheckBox("分模式设置最高点")
+        self.chk_db_topsplit.toggled.connect(self._apply)
+        self.sl_db_topa = FloatSlider(0.40, 1.20, getattr(js, "db_top_a", 0.85), 0.01, 2)
+        self.sl_db_topb = FloatSlider(0.40, 1.20, getattr(js, "db_top_b", 0.85), 0.01, 2)
+        self.sl_db_topc = FloatSlider(0.40, 1.20, getattr(js, "db_top_c", 0.85), 0.01, 2)
+        self.chk_db_topsplit.toggled.connect(self._sync_top_split)
+        self.sl_db_popms = FloatSlider(0.10, 1.20, getattr(js, "db_pop_ms", 320.0) / 1000.0, 0.02, 2, " s")
+        self.sl_db_popms.setToolTip("A：圆点膨胀的整段时长（命中前一半渐大、命中后一半渐小）")
+        self.sl_db_shakems = FloatSlider(0.10, 1.20, getattr(js, "db_shake_ms", 320.0) / 1000.0, 0.02, 2, " s")
+        self.sl_db_shakems.setToolTip("B：整体放大的整段时长（命中前一半渐大、命中后一半渐小）")
+        self.sl_db_tintramp = FloatSlider(0.00, 0.60, getattr(js, "db_tint_ramp_ms", 140.0) / 1000.0, 0.01, 2, " s")
+        self.sl_db_tintramp.setToolTip("命中前多久开始向该 Beat 的颜色渐变")
         for w in (self.sl_db_circle, self.sl_db_len, self.sl_db_gscale, self.sl_db_dipa,
                   self.sl_db_dipb, self.sl_db_dipc, self.sl_db_capw, self.sl_db_caph,
                   self.sl_db_cappop, self.sl_db_pop, self.sl_db_scale, self.sl_db_shake,
                   self.sl_db_rise, self.sl_db_gap, self.sl_db_glide,
-                  self.sl_db_cappopms):
+                  self.sl_db_cappopms, self.sl_db_top, self.sl_db_topa,
+                  self.sl_db_topb, self.sl_db_topc, self.sl_db_popms,
+                  self.sl_db_shakems, self.sl_db_tintramp):
             w.valueChanged.connect(self._apply)
         f2b.addRow("哑铃长度", self.sl_db_len)
         f2b.addRow("哑铃整体大小", self.sl_db_gscale)
@@ -1049,6 +1065,13 @@ class StylePanel(QWidget):
         f2b.addRow("空闲静止阈值", self.sl_db_gap)
         f2b.addRow("空闲滑动时长", self.sl_db_glide)
         f2b.addRow("胶囊膨胀时长", self.sl_db_cappopms)
+        f2b.addRow("胶囊最高点", self.sl_db_top)
+        f2b.addRow("", self.chk_db_topsplit)
+        f2b.addRow("A/B/C 最高点", _row(self.sl_db_topa, self.sl_db_topb))
+        f2b.addRow("", self.sl_db_topc)
+        f2b.addRow("圆点膨胀时长", self.sl_db_popms)
+        f2b.addRow("整体放大时长", self.sl_db_shakems)
+        f2b.addRow("变色渐入", self.sl_db_tintramp)
         root.addWidget(box2b)
 
         gs = self.doc.project.theme.ghost
@@ -1127,7 +1150,16 @@ class StylePanel(QWidget):
         self.sl_db_rise.setValue(getattr(js, "db_rise_frac", 0.71))
         self.sl_db_gap.setValue(getattr(js, "db_idle_gap_ms", 1500.0) / 1000.0)
         self.sl_db_glide.setValue(getattr(js, "db_idle_glide_ms", 400.0) / 1000.0)
-        self.sl_db_cappopms.setValue(getattr(js, "db_cap_pop_ms", 140.0) / 1000.0)
+        self.sl_db_cappopms.setValue(getattr(js, "db_cap_pop_ms", 280.0) / 1000.0)
+        self.sl_db_top.setValue(getattr(js, "db_travel_top", 0.85))
+        self.chk_db_topsplit.setChecked(bool(getattr(js, "db_top_split", False)))
+        self.sl_db_topa.setValue(getattr(js, "db_top_a", 0.85))
+        self.sl_db_topb.setValue(getattr(js, "db_top_b", 0.85))
+        self.sl_db_topc.setValue(getattr(js, "db_top_c", 0.85))
+        self.sl_db_popms.setValue(getattr(js, "db_pop_ms", 320.0) / 1000.0)
+        self.sl_db_shakems.setValue(getattr(js, "db_shake_ms", 320.0) / 1000.0)
+        self.sl_db_tintramp.setValue(getattr(js, "db_tint_ramp_ms", 140.0) / 1000.0)
+        self._sync_top_split()
         i = self.cb_judge_shape.findData(js.shape)
         self.cb_judge_shape.setCurrentIndex(max(0, i))
         self.lbl_judge_img.setText(os.path.basename(js.image) if js.image else tr("未设置"))
@@ -1160,6 +1192,13 @@ class StylePanel(QWidget):
         self.refresh()
         self.doc.touch("应用预设")
         self.changed.emit()
+
+
+    def _sync_top_split(self) -> None:
+        """勾了「分模式设置最高点」才允许单独调 A/B/C 的最高点。"""
+        on = self.chk_db_topsplit.isChecked()
+        for w in (self.sl_db_topa, self.sl_db_topb, self.sl_db_topc):
+            w.setEnabled(on)
 
     def _pick_judge_image(self) -> None:
         path = choose_skin_image(self)
@@ -1211,6 +1250,14 @@ class StylePanel(QWidget):
         js.db_idle_gap_ms = self.sl_db_gap.value() * 1000.0
         js.db_idle_glide_ms = self.sl_db_glide.value() * 1000.0
         js.db_cap_pop_ms = self.sl_db_cappopms.value() * 1000.0
+        js.db_travel_top = self.sl_db_top.value()
+        js.db_top_split = self.chk_db_topsplit.isChecked()
+        js.db_top_a = self.sl_db_topa.value()
+        js.db_top_b = self.sl_db_topb.value()
+        js.db_top_c = self.sl_db_topc.value()
+        js.db_pop_ms = self.sl_db_popms.value() * 1000.0
+        js.db_shake_ms = self.sl_db_shakems.value() * 1000.0
+        js.db_tint_ramp_ms = self.sl_db_tintramp.value() * 1000.0
         js.shape = self.cb_judge_shape.currentData()
         js.idle_color = self.btn_idle.color()
         js.idle_scale = self.sl_idle_scale.value()

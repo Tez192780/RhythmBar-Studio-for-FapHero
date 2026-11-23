@@ -29,6 +29,13 @@ rbar_settings.json
 rbar_settings.json.tmp
 skins/
 
+# 导出的视频（属于个人产物，不进仓库）
+*.mov
+*.mp4
+*.webm
+*.mkv
+*.avi
+
 # 编辑器 / 系统
 .vscode/
 .idea/

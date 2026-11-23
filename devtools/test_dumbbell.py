@@ -135,37 +135,64 @@ def main() -> int:
     p.chart.notes.remove(far)
     p.chart.sort()
 
-    # ------------------------------------------------------ 5. A/B 反馈形变
+    # --------------------------------------------- 命中脉冲：渐大 → 峰值 → 渐小
     st = p.theme.styles["cyan"]
-    st.feedback = "A"
-    pop0, _s0, dx0, _dy0, cap0 = r._dumbbell_feedback(st, 0.0, H, True)
-    pop_mid, _s1, _dx1, _dy1, cap_mid = r._dumbbell_feedback(st, js.db_pop_ms / 2, H, True)
-    pop_end, _s2, _d3, _d4, cap_end = r._dumbbell_feedback(st, js.db_pop_ms + 1, H, True)
-    check("A：圆点从 1.0 开始膨胀", abs(pop0 - 1.0) < 1e-6, f"{pop0:.3f}")
-    check("A：中途膨胀到设定倍率", abs(pop_mid - js.db_pop_scale) < 0.05,
-          f"{pop_mid:.3f} vs {js.db_pop_scale:.3f}")
-    check("A：结束后回到 1.0", abs(pop_end - 1.0) < 1e-6, f"{pop_end:.3f}")
-    check("A：不整体缩放、不抖动", abs(_s1 - 1.0) < 1e-9 and abs(dx0) < 1e-9)
+    def env_curve(total: float) -> list[float]:
+        step = total / 12.0
+        return [r._impact_env(-total / 2 + k * step, total) for k in range(13)]
 
-    st.feedback = "B"
-    pop_b, sc_b, dx_b, _dyb, _capb = r._dumbbell_feedback(st, js.db_shake_ms / 2, H, True)
-    check("B：整体放大到设定倍率", abs(sc_b - js.db_shake_scale) < 0.02,
-          f"{sc_b:.3f} vs {js.db_shake_scale:.3f}")
-    check("B：不膨胀圆点", abs(pop_b - 1.0) < 1e-9)
-    xs = [r._dumbbell_feedback(st, float(d), H, True)[2] for d in range(0, 200, 5)]
-    check("B：抖动来回摆", min(xs) < -0.01 and max(xs) > 0.01,
-          f"min={min(xs):.2f} max={max(xs):.2f}")
+    curve = env_curve(js.db_cap_pop_ms)
+    check("脉冲包络在命中前为 0（还没开始）", abs(curve[0]) < 1e-9, f"{curve[0]:.4f}")
+    check("脉冲包络在命中那一帧为 1（峰值）", abs(curve[6] - 1.0) < 1e-9, f"{curve[6]:.4f}")
+    check("脉冲包络在命中后回到 0", abs(curve[-1]) < 1e-9, f"{curve[-1]:.4f}")
+    check("脉冲包络前段单调增大",
+          all(curve[i] <= curve[i + 1] + 1e-9 for i in range(6)),
+          f"{[round(v, 2) for v in curve[:7]]}")
+    check("脉冲包络后段单调减小",
+          all(curve[i] >= curve[i + 1] - 1e-9 for i in range(6, 12)),
+          f"{[round(v, 2) for v in curve[6:]]}")
 
-    # 胶囊膨胀：命中瞬间就是最大值，随后单调回落（A/B 有，C 没有）
     for kind in ("A", "B"):
         st.feedback = kind
-        c0 = r._dumbbell_feedback(st, 0.0, H, True)[4]
-        cm = r._dumbbell_feedback(st, js.db_cap_pop_ms / 2, H, True)[4]
-        c9 = r._dumbbell_feedback(st, js.db_cap_pop_ms + 1, H, True)[4]
-        check(f"{kind}：胶囊在命中瞬间膨胀到最大", abs(c0 - js.db_cap_pop) < 1e-9,
-              f"{c0:.3f} vs {js.db_cap_pop:.3f}")
-        check(f"{kind}：之后单调回落", c0 > cm > c9 and abs(c9 - 1.0) < 1e-9,
-              f"{c0:.3f} -> {cm:.3f} -> {c9:.3f}")
+        total = js.db_pop_ms if kind == "A" else js.db_shake_ms
+        span_half = total / 2
+        f_start = r._dumbbell_feedback(st, -span_half, H, True)
+        f_peak = r._dumbbell_feedback(st, 0.0, H, True)
+        f_end = r._dumbbell_feedback(st, span_half, H, True)
+        idx = 0 if kind == "A" else 1
+        check(f"{kind}：命中前处于原尺寸（不是突然变大）", abs(f_start[idx] - 1.0) < 1e-9,
+              f"{f_start[idx]:.3f}")
+        check(f"{kind}：命中那一帧为最大值",
+              abs(f_peak[idx] - (js.db_pop_scale if kind == "A" else js.db_shake_scale)) < 1e-9,
+              f"{f_peak[idx]:.3f}")
+        check(f"{kind}：之后回到原尺寸", abs(f_end[idx] - 1.0) < 1e-9, f"{f_end[idx]:.3f}")
+        # 中途应该已经比原尺寸大（确实是渐变而不是阶跃）
+        mid = r._dumbbell_feedback(st, -span_half / 2, H, True)[idx]
+        check(f"{kind}：命中前一半时已经在逐渐变大", 1.0 < mid < f_peak[idx],
+              f"{mid:.3f}")
+
+    # 胶囊膨胀同样遵循脉冲包络（A/B 有、C 没有）
+    for kind in ("A", "B"):
+        st.feedback = kind
+        c_half = js.db_cap_pop_ms / 2
+        c0 = r._dumbbell_feedback(st, -c_half, H, True)[4]
+        cm = r._dumbbell_feedback(st, -c_half / 2, H, True)[4]
+        cp = r._dumbbell_feedback(st, 0.0, H, True)[4]
+        c9 = r._dumbbell_feedback(st, c_half, H, True)[4]
+        check(f"{kind}：胶囊命中前已在变大", abs(c0 - 1.0) < 1e-9 and 1.0 < cm < cp,
+              f"{c0:.3f} -> {cm:.3f} -> {cp:.3f}")
+        check(f"{kind}：胶囊命中帧最大、之后回落",
+              abs(cp - js.db_cap_pop) < 1e-9 and abs(c9 - 1.0) < 1e-9,
+              f"peak={cp:.3f} end={c9:.3f}")
+
+    # ---------------------------------------------------------- 变色渐入
+    ramp = js.db_tint_ramp_ms
+    check("命中前才开始变色（渐入前为 0）", abs(r._tint_k(-ramp - 1.0)) < 1e-9)
+    check("变色在命中帧最浓", abs(r._tint_k(0.0) - 1.0) < 1e-9)
+    check("命中前一半时颜色已经部分过渡", 0.0 < r._tint_k(-ramp / 2) < 1.0,
+          f"{r._tint_k(-ramp / 2):.3f}")
+    check("命中后按 flash_ms 淡出", r._tint_k(js.flash_ms / 2) < 1.0
+          and abs(r._tint_k(js.flash_ms)) < 1e-9)
 
     # ------------------------------------------------------ C 微下沉
     st.feedback = "C"
@@ -181,6 +208,30 @@ def main() -> int:
               abs(pop - 1.0) < 1e-9 and abs(sc - 1.0) < 1e-9
               and abs(dx) < 1e-9 and abs(dy) < 1e-9 and abs(cap - 1.0) < 1e-9,
               f"pop={pop:.2f} scale={sc:.2f} dx={dx:.2f} cap={cap:.2f}")
+
+    # ---------------------------------------------------- 分模式最高点
+    def tops_at_peak() -> float:
+        # 取上升段靠顶的位置（严格在上升段内，避开边界）
+        return r._capsule_ynorm(tm.ms(10.0 + js.db_rise_frac * 0.95))
+
+    js.db_top_split = False
+    top_base = 0.5 - js.db_travel_top * half
+    js.db_top_b = 1.15
+    check("未开启分模式时，B 的最高点仍用统一值", abs(tops_at_peak() - top_base) < 0.02,
+          f"{tops_at_peak():.3f} vs {top_base:.3f}")
+    js.db_top_split = True
+    for style in p.theme.styles.values():
+        style.feedback = "B"
+    y_b_top = tops_at_peak()
+    for style in p.theme.styles.values():
+        style.feedback = "A"
+    y_a_top = tops_at_peak()
+    check("开启分模式后 B 的最高点更高", y_b_top < y_a_top - 0.01,
+          f"B={y_b_top:.3f} A={y_a_top:.3f}")
+    js.db_top_split = False
+    js.db_top_b = 0.85
+    for style in p.theme.styles.values():
+        style.feedback = "auto"
 
     # 哑铃颜色可调
     st.feedback = "auto"

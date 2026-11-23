@@ -108,19 +108,24 @@ class JudgeStyle:
     db_capsule_w: float = 0.260   # 胶囊宽（实测 52 / 200）
     db_capsule_h: float = 0.100   # 胶囊高（实测 20 / 200）
     db_travel_top: float = 0.85   # 胶囊最高点：中轴往上多少倍 half_len（0.85 → 略低于上圆点）
+    db_top_split: bool = False    # 是否给 A/B/C 三种下沉分别设置最高点
+    db_top_a: float = 0.85        # A 的最高点（倍 half_len）
+    db_top_b: float = 0.85        # B 的最高点
+    db_top_c: float = 0.85        # C 的最高点
     db_dip_a: float = 0.77        # A 浅下沉：中轴往下多少倍 half_len（1.0 = 下圆点）
     db_dip_b: float = 1.45        # B 深下沉：穿过下圆点
     db_dip_c: float = 0.50        # C 微下沉：只轻轻下压一点，无任何命中特效
     db_rise_frac: float = 0.71    # 一个节拍周期里「上升」占的比例（实测 0.33s / 0.468s）
     db_fall_ease: float = 0.85    # 下落段缓动指数（<1 = 前段更快）
     db_pop_scale: float = 1.65    # A：命中瞬间圆点膨胀倍率
-    db_pop_ms: float = 160.0      # A：膨胀到回弹的总时长
+    db_pop_ms: float = 320.0      # A：圆点膨胀的整段时长（一半渐大 + 一半渐小）
     db_cap_pop: float = 1.16      # 命中瞬间胶囊自身的膨胀倍率（A/B）
-    db_cap_pop_ms: float = 140.0  # 胶囊从最大膨胀回落到原尺寸的时长
+    db_cap_pop_ms: float = 280.0  # 胶囊膨胀的整段时长（一半渐大 + 一半渐小）
     db_shake_scale: float = 1.12  # B：命中瞬间整体放大倍率
     db_shake_amp: float = 0.025   # B：抖动幅度（相对条高）
     db_shake_hz: float = 30.0     # B：抖动频率（Hz）
-    db_shake_ms: float = 220.0    # B：放大+抖动持续时长
+    db_shake_ms: float = 320.0    # B：整体放大的整段时长（一半渐大 + 一半渐小）
+    db_tint_ramp_ms: float = 140.0  # 变色渐入：命中前多久开始向该 Beat 的颜色过渡
     db_idle_gap_ms: float = 1500.0  # 距下一颗音符超过这么久就停止往复，静止在最高点
     db_idle_glide_ms: float = 400.0  # 进出空闲时，从当前位置平滑滑到目标位置的时长
     db_ring: bool = False         # 命中扩散圈（参考视频里没有，默认关）

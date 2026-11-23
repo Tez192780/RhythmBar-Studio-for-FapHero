@@ -481,28 +481,63 @@ class BarRenderer:
             p.drawEllipse(QPointF(jx, h * 0.5), r, r)
         self._draw_judge_diamond(p, w, h, t_ms)
 
-    def _judge_target(self, t_ms: float) -> tuple[Note | None, float]:
+    def _judge_target(self, t_ms: float, span: float | None = None) -> tuple[Note | None, float]:
         """找当前“正在被打 / 刚被打到”的音符，返回 (音符, dt)。
 
         优先选已经命中（0 <= dt <= flash_ms）的音符；否则退而选最近的未来音符。
         原先直接把未来音符也算进“最近”，密集谱面（音符间隔 < flash_ms）会把
         已经命中的音符挤掉，导致判定菱形不闪。
+
+        span 可以调大，让「命中前的渐大」也有目标音符可跟。
         """
         js: JudgeStyle = self.th.judge
-        span = max(float(js.window_ms), float(js.flash_ms)) + 40.0
+        near_span = (float(span) if span else
+                     max(float(js.window_ms), float(js.flash_ms)) + 40.0)
         best_hit, best_hit_dt = None, 1e18
         best_future, best_future_dt = None, 1e18
-        for n in self.p.chart.near(t_ms, span):
+        for n in self.p.chart.near(t_ms, near_span):
             dt = t_ms - n.t
             if 0.0 <= dt <= float(js.flash_ms):
                 if dt < best_hit_dt:
                     best_hit, best_hit_dt = n, dt
-            elif -float(js.window_ms) <= dt < 0.0:
+            elif -near_span <= dt < 0.0:
                 if abs(dt) < abs(best_future_dt):
                     best_future, best_future_dt = n, dt
         if best_hit is not None:
             return best_hit, best_hit_dt
         return best_future, best_future_dt
+
+    def _tint_k(self, dt: float) -> float:
+        """变色强度：命中前渐入（db_tint_ramp_ms），命中那一帧最浓，之后按 flash_ms 淡出。"""
+        js: JudgeStyle = self.th.judge
+        ramp = max(1.0, float(getattr(js, "db_tint_ramp_ms", 140.0)))
+        fade = max(1.0, float(js.flash_ms))
+        if dt < -ramp or dt > fade:
+            return 0.0
+        if dt < 0.0:
+            u = (dt + ramp) / ramp                 # 0 → 1
+            return u * u * (3.0 - 2.0 * u)
+        return 1.0 - dt / fade
+
+    # --------------------------------------------- 命中脉冲包络（渐大 → 峰值 → 渐小）
+    @staticmethod
+    def _impact_env(dt: float, total_ms: float) -> float:
+        """命中脉冲：dt=0（命中那一帧）为峰值 1.0，前后各用一半时长平滑过渡。
+
+        dt < 0 = 还在接近（渐大）；dt > 0 = 已经命中（渐小）。
+        这样「变大」是渐进的，不会在最低点突然跳一下。
+        """
+        total = float(total_ms or 0.0)
+        if total <= 0.0:
+            return 0.0
+        half = total * 0.5
+        if dt <= -half or dt >= half:
+            return 0.0
+        if dt < 0.0:
+            u = (dt + half) / half                      # 0 → 1 逐渐接近命中
+            return u * u * (3.0 - 2.0 * u)              # smoothstep：渐大
+        u = dt / half
+        return (1.0 - u) ** 1.6                         # 渐小
 
     # ------------------------------------------------------- 哑铃判定点（新样式）
     def _feedback_kind(self, st: NoteStyle | None) -> str:
@@ -550,6 +585,18 @@ class BarRenderer:
             return 0.0, prev_note, next_note, True     # 间隔太长：停住
         return (t_ms - prev_note.t) / span, prev_note, next_note, False
 
+    def _top_mult(self, note: Note | None) -> float:
+        """胶囊最高点（倍 half_len）。开启「分模式最高点」后按该音符的 A/B/C 取各自的值。"""
+        js: JudgeStyle = self.th.judge
+        base = max(0.05, float(getattr(js, "db_travel_top", 0.85)))
+        if not bool(getattr(js, "db_top_split", False)) or note is None:
+            return base
+        st = self.th.styles.get(note.type)
+        if st is None:
+            return base
+        kind = self._feedback_kind(st).lower()
+        return max(0.05, float(getattr(js, f"db_top_{kind}", base)))
+
     def _dip_mult(self, note: Note | None) -> float:
         """某颗音符对应的下沉深度（单位 = half_len 的倍数）。"""
         js: JudgeStyle = self.th.judge
@@ -584,34 +631,39 @@ class BarRenderer:
         frac, prev_note, next_note, idle = self._judge_phase(t_ms)
         half = max(0.01, float(getattr(js, "db_half_len", 0.31))
                    * max(0.2, float(getattr(js, "db_scale", 1.0))))
-        top = 0.5 - max(0.05, float(getattr(js, "db_travel_top", 0.85))) * half
+
+        def top_of(note: Note | None) -> float:
+            return 0.5 - self._top_mult(note) * half
 
         def dip(note: Note | None) -> float:
             return 0.5 + self._dip_mult(note) * half
 
         if idle:
+            rest = top_of(prev_note if prev_note is not None else next_note)
             # 平滑过渡：刚过完一颗 → 从最低点升回最高点；快要来下一颗 → 从最高点落下去
             glide = max(0.0, float(getattr(js, "db_idle_glide_ms", 400.0)))
             if glide <= 0.0:
-                return top
+                return rest
             if prev_note is not None:
                 since = t_ms - float(prev_note.t)
                 if 0.0 <= since < glide:
                     u = since / glide
-                    return dip(prev_note) + (top - dip(prev_note)) * (u * u * (3.0 - 2.0 * u))
+                    return dip(prev_note) + (rest - dip(prev_note)) * (u * u * (3.0 - 2.0 * u))
             if next_note is not None:
                 left = float(next_note.t) - t_ms
                 if 0.0 <= left < glide:
                     u = 1.0 - left / glide
-                    return top + (dip(next_note) - top) * (u * u * (3.0 - 2.0 * u))
-            return top
+                    return rest + (dip(next_note) - rest) * (u * u * (3.0 - 2.0 * u))
+            return rest
 
         rise = max(0.05, min(0.95, float(getattr(js, "db_rise_frac", 0.71))))
         if frac < rise:
+            top = top_of(prev_note)                           # 上升段用这一颗对应的最高点
             d = dip(prev_note)                                # 刚从最低点往上走
             u = frac / rise
             k = u * u * (3.0 - 2.0 * u)                       # smoothstep
             return d + (top - d) * k
+        top = top_of(next_note)                               # 下落段用下一颗对应的最高点
         d = dip(next_note)                                    # 正在砸向下一颗
         u = (frac - rise) / (1.0 - rise)
         k = u ** max(0.2, float(getattr(js, "db_fall_ease", 0.85)))
@@ -619,12 +671,12 @@ class BarRenderer:
 
     def _dumbbell_feedback(self, st: NoteStyle | None, dt: float, h: float,
                            hit: bool) -> tuple[float, float, float, float, float]:
-        """命中瞬间的形变：(圆点膨胀, 整体缩放, x 偏移, y 偏移, 胶囊膨胀)。
+        """命中形变：(圆点膨胀, 整体缩放, x 偏移, y 偏移, 胶囊膨胀)。
 
-        A（浅下沉）：两侧圆点膨胀再回弹；
-        B（深下沉）：整体放大 + 短暂颤抖；
-        两种都会让胶囊自身轻轻膨胀一下（参考视频里到底部时也有这点膨胀）。
-        抽成纯函数，绘制代码只负责画，测试可以直接断言数值。
+        三者都用同一个"命中脉冲"包络：命中那一帧最大，之前渐大、之后渐小，
+        不会在最低点突然变大。时长各自可调。
+        A：圆点膨胀；B：整体放大 + 颤抖；C：什么都不做。
+        抖动只在命中之后（dt ≥ 0）出现。
         """
         js: JudgeStyle = self.th.judge
         if not hit:
@@ -632,29 +684,25 @@ class BarRenderer:
 
         kind = self._feedback_kind(st)
         if kind == "C":
-            # 微下沉：不加任何命中特效（不膨胀圆点、不整体放大、也不抖）
+            # 微下沉：不加任何命中特效
             return 1.0, 1.0, 0.0, 0.0, 1.0
 
-        # 胶囊膨胀：命中（= 胶囊最低点）的那一帧就是最大值，之后平滑回落
-        cap_total = float(getattr(js, "db_cap_pop_ms", 140.0))
-        cap_pop = 1.0
-        if cap_total > 0:
-            u = min(1.0, max(0.0, dt / cap_total))
-            cap_pop = 1.0 + (float(getattr(js, "db_cap_pop", 1.16)) - 1.0) * (1.0 - u) ** 1.6
+        # 胶囊膨胀：A/B 通用
+        cap_env = self._impact_env(dt, float(getattr(js, "db_cap_pop_ms", 280.0)))
+        cap_pop = 1.0 + (float(getattr(js, "db_cap_pop", 1.16)) - 1.0) * cap_env
 
         if kind == "A":
-            total = float(getattr(js, "db_pop_ms", 160.0))
-            if total <= 0:
-                return 1.0, 1.0, 0.0, 0.0, cap_pop
-            u = min(1.0, max(0.0, dt / total))
-            pop = 1.0 + (float(getattr(js, "db_pop_scale", 1.65)) - 1.0) * math.sin(math.pi * u)
+            env = self._impact_env(dt, float(getattr(js, "db_pop_ms", 320.0)))
+            pop = 1.0 + (float(getattr(js, "db_pop_scale", 1.65)) - 1.0) * env
             return pop, 1.0, 0.0, 0.0, cap_pop
-        total = float(getattr(js, "db_shake_ms", 220.0))
-        if total <= 0:
-            return 1.0, 1.0, 0.0, 0.0, cap_pop
-        u = min(1.0, max(0.0, dt / total))
-        scale = 1.0 + (float(getattr(js, "db_shake_scale", 1.12)) - 1.0) * math.sin(math.pi * u)
-        amp = float(getattr(js, "db_shake_amp", 0.025)) * h * (1.0 - u) ** 1.5
+
+        total = float(getattr(js, "db_shake_ms", 320.0))
+        env = self._impact_env(dt, total)
+        scale = 1.0 + (float(getattr(js, "db_shake_scale", 1.12)) - 1.0) * env
+        amp = 0.0
+        if dt >= 0.0 and total > 0.0:
+            u = min(1.0, dt / (total * 0.5))
+            amp = float(getattr(js, "db_shake_amp", 0.025)) * h * (1.0 - u) ** 1.5
         ph = 2.0 * math.pi * float(getattr(js, "db_shake_hz", 30.0)) * dt / 1000.0
         return 1.0, scale, amp * math.sin(ph), amp * 0.55 * math.sin(ph * 1.7 + 0.9), cap_pop
 
@@ -666,16 +714,22 @@ class BarRenderer:
         """
         js: JudgeStyle = self.th.judge
         jx = self.judge_x(w)
-        n, dt = self._judge_target(t_ms)
+        # 命中前后都要参与：渐大发生在命中之前，所以回看得比判定窗口更远
+        span = max(float(js.window_ms),
+                   float(getattr(js, "db_tint_ramp_ms", 140.0)),
+                   float(getattr(js, "db_pop_ms", 320.0)) / 2.0,
+                   float(getattr(js, "db_shake_ms", 320.0)) / 2.0,
+                   float(getattr(js, "db_cap_pop_ms", 280.0)) / 2.0)
+        n, dt = self._judge_target(t_ms, span)
         st = self.th.styles.get(n.type) if n is not None else None
         if n is not None and st is None:
             st = NoteStyle(key=n.type, name=n.type)
 
-        # 命中染色：命中瞬间按该音符颜色染，然后衰减回哑铃自身的常驻色
+        # 命中染色：命中前就开始向该 Beat 的颜色渐变，命中那一帧达到最浓，然后慢慢退回
         k = 0.0
-        hit = n is not None and 0.0 <= dt <= float(js.flash_ms)
+        hit = n is not None and abs(dt) <= span
         if hit and js.flash:
-            k = (1.0 - dt / max(1.0, float(js.flash_ms))) * max(0.0, min(1.0, float(js.tint)))
+            k = self._tint_k(dt) * max(0.0, min(1.0, float(js.tint)))
         db_color = qc(str(getattr(js, "db_color", "") or js.idle_color))
         color = mix(db_color, qc(st.color), k) if (st is not None and k > 0.001) else db_color
         outline = qc(st.outline if st is not None else "#141a20")

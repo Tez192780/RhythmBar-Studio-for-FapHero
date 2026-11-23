@@ -5,7 +5,7 @@ r"""哑铃判定点的可视化预览：把一个节拍内的胶囊行程、以�
 
 产物（默认写到 ../_video_analysis）：
     db_phase.png   一个节拍内 8 帧（相位 0 → 0.875）的胶囊行程
-    db_fbA.png     命中后 6 帧（0/40/80/120/160/200ms）的「A：圆点膨胀」
+    db_fbA.png     命中前后 6 帧（-120/-60/0/60/120/200ms）的「A：圆点膨胀」
     db_fbB.png     命中后 6 帧的「B：整体放大 + 抖动」
     db_fbC.png     命中后 6 帧的「C：微下沉（无特效）」
 """
@@ -101,7 +101,7 @@ def main() -> int:
         rows = []
         for st in p.theme.styles.values():
             st.feedback = kind
-        for dt in (0, 40, 80, 120, 160, 220):
+        for dt in (-120, -60, 0, 60, 120, 200):
             rows.append(crop(render_frame_image(p, hit_t + dt, W, H, 2)))
         tiled = tile(rows)
         path = os.path.join(OUT, f"db_fb{kind}.png")
