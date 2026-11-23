@@ -101,7 +101,8 @@ def main() -> int:
     y_far2 = r._capsule_ynorm(last_t + 6000.0)
     check("最后一颗之后不再往复（两个时刻高度相同）", abs(y_far1 - y_far2) < 1e-9,
           f"{y_far1:.4f} / {y_far2:.4f}")
-    check("空闲时停在最低点", abs(y_far1 - dip_a_n) < 0.01, f"{y_far1:.3f}")
+    check("空闲时停在最高点（第一拍前的静止位）", abs(y_far1 - top_n) < 0.01,
+          f"{y_far1:.3f} vs top {top_n:.3f}")
 
     # 插入一颗很远的音符，间隔超过阈值 → 中间依然静止
     far = Note(last_t + 5000.0, p.theme.active_rows()[0], 0)
@@ -132,7 +133,7 @@ def main() -> int:
     check("B：抖动来回摆", min(xs) < -0.01 and max(xs) > 0.01,
           f"min={min(xs):.2f} max={max(xs):.2f}")
 
-    # 胶囊膨胀：两种反馈都有
+    # 胶囊膨胀：A/B 有，C 没有
     for kind in ("A", "B"):
         st.feedback = kind
         c0 = r._dumbbell_feedback(st, 0.0, H, True)[4]
@@ -141,6 +142,51 @@ def main() -> int:
         check(f"{kind}：胶囊命中时也轻微膨胀", abs(c0 - 1.0) < 1e-6
               and abs(cm - js.db_cap_pop) < 0.02 and abs(c9 - 1.0) < 1e-6,
               f"{c0:.2f} -> {cm:.2f} -> {c9:.2f}")
+
+    # ------------------------------------------------------ C 微下沉
+    st.feedback = "C"
+    check("C：识别为微下沉", r._feedback_kind(st) == "C")
+    dip_c_n = 0.5 + js.db_dip_c * half
+    check("C：最低点 = 中轴 + 0.5 半长（默认）", abs(r._capsule_ynorm(hit_t) - dip_c_n) < 0.01,
+          f"{r._capsule_ynorm(hit_t):.3f} vs {dip_c_n:.3f}")
+    check("C：比 A 浅、比 A 高（落在中轴与浅下沉之间）",
+          dip_c_n < dip_a_n, f"C={dip_c_n:.2f} A={dip_a_n:.2f}")
+    for dt in (0.0, js.db_pop_ms / 2, js.db_shake_ms / 2):
+        pop, sc, dx, dy, cap = r._dumbbell_feedback(st, dt, H, True)
+        check(f"C：dt={dt:.0f}ms 时没有任何命中特效",
+              abs(pop - 1.0) < 1e-9 and abs(sc - 1.0) < 1e-9
+              and abs(dx) < 1e-9 and abs(dy) < 1e-9 and abs(cap - 1.0) < 1e-9,
+              f"pop={pop:.2f} scale={sc:.2f} dx={dx:.2f} cap={cap:.2f}")
+
+    # 哑铃颜色可调
+    st.feedback = "auto"
+    js.db_color = "#ff3060"
+    img_color = render_frame_image(p, tm.ms(10.5), W, H, 1)   # 拍中间，无染色
+    jx0 = int(W * 0.33)
+    cap_y0 = int(r._capsule_ynorm(tm.ms(10.5)) * H)
+    cc = img_color.pixelColor(jx0, cap_y0)
+    check("哑铃颜色可调（胶囊取到设定色）", cc.red() > 180 and cc.green() < 140,
+          f"rgb={cc.red()},{cc.green()},{cc.blue()}")
+    js.db_color = "#e9edf0"
+
+    # ------------------------------------------------- 内容尺寸与画布解耦
+    rs = p.render
+    st2 = p.theme.styles["cyan"]
+    rs.height = 120
+    r120 = r.note_radius(120.0, st2)
+    rs.height = 200
+    r200 = r.note_radius(200.0, st2)
+    check("条带高度从 120 改到 200：音符半径不变", abs(r200 - r120) < 1e-6,
+          f"{r120:.2f} -> {r200:.2f}")
+    rs.content_scale = 2.0
+    check("内容缩放 2× 时音符半径翻倍", abs(r.note_radius(200.0, st2) / r120 - 2.0) < 1e-6,
+          f"{r.note_radius(200.0, st2):.2f}")
+    rs.content_scale = 1.0
+    # 导出到更大的画布时仍然跟随（h 是渲染目标高度）
+    check("渲染目标放大 2 倍时内容也放大 2 倍",
+          abs(r.note_radius(400.0, st2) / r120 - 2.0) < 1e-6,
+          f"{r.note_radius(400.0, st2):.2f}")
+    rs.height = H
 
     # ------------------------------------------------ 6. auto 与手动指定
     st.feedback = "auto"
@@ -211,14 +257,19 @@ def main() -> int:
     p.chart.sort()
     img = render_frame_image(p, hit_t + 60, W, H, 1)
     jx = int(W * 0.33)
-    mid_y = int((y_top + y_bot) / 2) + 8        # 避开胶囊（空闲时停在底部）
+    mid_y = int((y_top + y_bot) / 2) + 8        # 取杆的中段（空闲时胶囊停在顶部，不挡这里）
     c = img.pixelColor(jx, mid_y)
     hw_px = js.db_handle_w * H * js.db_scale
     side_x = jx + int(round(max(1.0, hw_px * 1.5)))
     side = img.pixelColor(side_x, mid_y)
-    check("竖杆中轴没有黑色实线", c.alpha() < 40, f"中轴像素 alpha={c.alpha()}")
-    check("竖杆在轴线两侧各有一条细线", side.alpha() > 60,
-          f"x=+{side_x - jx} 处 alpha={side.alpha()}")
+    check("竖杆中轴是实心纯色（不再透明）", c.alpha() > 200, f"中轴像素 alpha={c.alpha()}")
+    check("竖杆中轴不是黑线（颜色接近哑铃色）",
+          min(c.red(), c.green(), c.blue()) > 120,
+          f"rgb={c.red()},{c.green()},{c.blue()}")
+    rod_w = max(2.0, hw_px * 2.0)
+    run = sum(1 for dx in range(-12, 13) if img.pixelColor(jx + dx, mid_y).alpha() > 40)
+    check("竖杆宽度约等于设定粗细", 0.6 * rod_w <= run <= rod_w + 6,
+          f"实测 {run}px / 设定杆宽 {rod_w:.1f}px")
     p.chart.notes = saved_notes
     p.chart.sort()
 

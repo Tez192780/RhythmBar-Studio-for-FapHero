@@ -217,8 +217,19 @@ class BarRenderer:
         k = max(0.05, min(20.0, k))
         return self.judge_x(w) + side * dt / 1000.0 * self.speed(w) * k
 
+    def content_h(self, h: float) -> float:
+        """内容（音符 / 文字）的尺寸基准高度。
+
+        「条带尺寸」只改画布，不该把 Beat 和字体一起放大，所以内容按
+        `120 × content_scale` 的基准画；导出放大到更大的画布时再按比例跟随。
+        """
+        rs = self.rs
+        scale = max(0.2, min(4.0, float(getattr(rs, "content_scale", 1.0))))
+        nominal = max(1.0, float(getattr(rs, "height", 120) or 120))
+        return float(h) * (120.0 * scale / nominal)
+
     def note_radius(self, h: float, st: NoteStyle, scale: float = 1.0) -> float:
-        return 0.5 * float(self.rs.note_size) * h * float(st.size) * scale
+        return 0.5 * float(self.rs.note_size) * self.content_h(h) * float(st.size) * scale
 
     # --------------------------------------------------------------- 主入口
     def render(self, p: QPainter, w: float, h: float, t_ms: float, *,
@@ -269,7 +280,7 @@ class BarRenderer:
         rs = self.rs
         text = str(getattr(rs, "watermark_text", "") or "")
         if text:
-            size = max(1.0, float(getattr(rs, "watermark_size", 0.14)) * h)
+            size = max(1.0, float(getattr(rs, "watermark_size", 0.14)) * self.content_h(h))
             rect, flags = self._text_rect(str(getattr(rs, "watermark_pos", "bottom_left")),
                                           w, h, size)
             p.setFont(self._corner_font(size, bold=False))
@@ -280,7 +291,7 @@ class BarRenderer:
             n = self.beat_count(t_ms)
             label = str(getattr(rs, "beat_counter_label", "BEAT") or "").strip()
             body = f"{label} {n}" if label else str(n)
-            size = max(1.0, float(getattr(rs, "beat_counter_size", 0.14)) * h)
+            size = max(1.0, float(getattr(rs, "beat_counter_size", 0.14)) * self.content_h(h))
             rect, flags = self._text_rect(str(getattr(rs, "beat_counter_pos", "bottom_right")),
                                           w, h, size)
             p.setFont(self._corner_font(size, bold=True))
@@ -495,15 +506,15 @@ class BarRenderer:
 
     # ------------------------------------------------------- 哑铃判定点（新样式）
     def _feedback_kind(self, st: NoteStyle | None) -> str:
-        """这个音符类型在哑铃判定点上用 A（浅）还是 B（深）反馈。
+        """这个音符类型在哑铃判定点上用 A（浅）/ B（深）/ C（微）反馈。
 
         auto = 按尺寸给个建议：明显比默认大（size ≥ 1.2）用 B，否则 A。
-        尺寸只是默认建议，用户可以在「音符类型」面板里对每种类型手动指定 A/B。
+        尺寸只是默认建议，用户可以在「音符类型」面板里对每种类型手动指定。
         """
         if st is None:
             return "A"
         want = str(getattr(st, "feedback", "auto") or "auto").upper()
-        if want in ("A", "B"):
+        if want in ("A", "B", "C"):
             return want
         return "B" if float(getattr(st, "size", 1.0)) >= 1.2 else "A"
 
@@ -547,8 +558,11 @@ class BarRenderer:
         st = self.th.styles.get(note.type)
         if st is None:
             st = NoteStyle(key=note.type, name=note.type)
-        if self._feedback_kind(st) == "B":
+        kind = self._feedback_kind(st)
+        if kind == "B":
             return float(getattr(js, "db_dip_b", 1.45))
+        if kind == "C":
+            return float(getattr(js, "db_dip_c", 0.50))
         return float(getattr(js, "db_dip_a", 0.77))
 
     def _dumbbell_geometry(self, h: float) -> tuple[float, float, float, float, float]:
@@ -571,7 +585,7 @@ class BarRenderer:
                    * max(0.2, float(getattr(js, "db_scale", 1.0))))
         top = 0.5 - max(0.05, float(getattr(js, "db_travel_top", 0.85))) * half
         if idle:
-            return 0.5 + self._dip_mult(prev_note) * half
+            return top          # 空闲时停在最高点（停在最低点会让第一拍很难看）
         rise = max(0.05, min(0.95, float(getattr(js, "db_rise_frac", 0.71))))
         if frac < rise:
             dip = 0.5 + self._dip_mult(prev_note) * half      # 刚从最低点往上走
@@ -596,6 +610,11 @@ class BarRenderer:
         if not hit:
             return 1.0, 1.0, 0.0, 0.0, 1.0
 
+        kind = self._feedback_kind(st)
+        if kind == "C":
+            # 微下沉：不加任何命中特效（不膨胀圆点、不整体放大、也不抖）
+            return 1.0, 1.0, 0.0, 0.0, 1.0
+
         # 胶囊膨胀（A/B 通用）
         cap_total = float(getattr(js, "db_cap_pop_ms", 140.0))
         cap_pop = 1.0
@@ -604,7 +623,6 @@ class BarRenderer:
             cap_pop = 1.0 + (float(getattr(js, "db_cap_pop", 1.16)) - 1.0) * math.sin(
                 math.pi * u)
 
-        kind = self._feedback_kind(st)
         if kind == "A":
             total = float(getattr(js, "db_pop_ms", 160.0))
             if total <= 0:
@@ -634,13 +652,13 @@ class BarRenderer:
         if n is not None and st is None:
             st = NoteStyle(key=n.type, name=n.type)
 
-        # 命中染色：命中瞬间按该音符颜色染，然后衰减回常驻色
+        # 命中染色：命中瞬间按该音符颜色染，然后衰减回哑铃自身的常驻色
         k = 0.0
         hit = n is not None and 0.0 <= dt <= float(js.flash_ms)
         if hit and js.flash:
             k = (1.0 - dt / max(1.0, float(js.flash_ms))) * max(0.0, min(1.0, float(js.tint)))
-        idle_color = qc(js.idle_color)
-        color = mix(idle_color, qc(st.color), k) if (st is not None and k > 0.001) else idle_color
+        db_color = qc(str(getattr(js, "db_color", "") or js.idle_color))
+        color = mix(db_color, qc(st.color), k) if (st is not None and k > 0.001) else db_color
         outline = qc(st.outline if st is not None else "#141a20")
 
         pop_circle, scale, dx, dy, cap_pop = self._dumbbell_feedback(st, dt, h, hit)
@@ -655,18 +673,14 @@ class BarRenderer:
         p.scale(scale, scale)
         p.translate(-jx, -cy)
 
-        # 1) 竖杆：两根各自带描边的细线，中间刻意留空 → 中轴不会出现黑线
-        off = max(1.0, hw * 1.5)
-        for s in (-1.0, 1.0):
-            x = jx + s * off
-            pen = QPen(outline, max(1.2, hw * 1.4))
-            pen.setCapStyle(Qt.RoundCap)
-            p.setPen(pen)
-            p.drawLine(QPointF(x, y_top), QPointF(x, y_bot))
-            pen = QPen(color, max(0.6, hw * 0.6))
-            pen.setCapStyle(Qt.RoundCap)
-            p.setPen(pen)
-            p.drawLine(QPointF(x, y_top), QPointF(x, y_bot))
+        # 1) 竖杆：实心纯色杆 + 两侧描边（中间不留空，所以不会透出背景）
+        rod_w = max(2.0, hw * 2.0)
+        rod = QRectF(jx - rod_w * 0.5, y_top, rod_w, max(1.0, y_bot - y_top))
+        rod_path = QPainterPath()
+        rod_path.addRoundedRect(rod, rod_w * 0.5, rod_w * 0.5)
+        p.setPen(QPen(outline, max(1.0, hw * 0.7)))
+        p.setBrush(QBrush(color))
+        p.drawPath(rod_path)
 
         # 2) 上下圆点（A 反馈时在命中瞬间膨胀）
         rr = r_c * pop_circle
@@ -707,7 +721,7 @@ class BarRenderer:
             st = NoteStyle(key=n.type, name=n.type)
         y = self.lane_y(n.lane, h) if n is not None else h * 0.5
         # 判定点大小只由判定点自身设置决定，不能跟着当前音符类型的 size 变。
-        base_r = 0.5 * float(self.rs.note_size) * h
+        base_r = 0.5 * float(self.rs.note_size) * self.content_h(h)
         r = base_r * float(js.idle_scale)
         k = 0.0
         if n is not None and js.flash and 0.0 <= dt <= float(js.flash_ms):

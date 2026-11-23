@@ -7,6 +7,7 @@ r"""哑铃判定点的可视化预览：把一个节拍内的胶囊行程、以�
     db_phase.png   一个节拍内 8 帧（相位 0 → 0.875）的胶囊行程
     db_fbA.png     命中后 6 帧（0/40/80/120/160/200ms）的「A：圆点膨胀」
     db_fbB.png     命中后 6 帧的「B：整体放大 + 抖动」
+    db_fbC.png     命中后 6 帧的「C：微下沉（无特效）」
 """
 
 from __future__ import annotations
@@ -96,7 +97,7 @@ def main() -> int:
 
     # --- 2/3. A / B 两种命中反馈
     hit_t = tm.ms(10.0)
-    for kind in ("A", "B"):
+    for kind in ("A", "B", "C"):
         rows = []
         for st in p.theme.styles.values():
             st.feedback = kind

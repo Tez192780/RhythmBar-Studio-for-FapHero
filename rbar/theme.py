@@ -100,26 +100,28 @@ class JudgeStyle:
     # mode = "dumbbell" 时启用：上下两个圆点 + 细竖杆 + 沿杆上下滑动的横胶囊。
     # 几何全部以 **Beat 中轴（音符所在的那一行）为原点、相对条高 h** 表达，
     # 所以哑铃天然上下对称；改条带高度时整体等比缩放。
+    db_color: str = "#e9edf0"     # 哑铃本体颜色（常驻底色，命中时被音符颜色染）
     db_half_len: float = 0.31     # 中轴到上下圆点的距离（= 半个哑铃长度）
     db_scale: float = 1.0         # 整体缩放（圆点、胶囊、杆宽、长度一起放大）
-    db_circle_r: float = 0.040    # 圆点半径（实测直径 16 / 高 200）
+    db_circle_r: float = 0.055    # 圆点半径（参考视频约 0.040，实机觉得偏小故默认调大）
     db_handle_w: float = 0.016    # 竖杆粗细
     db_capsule_w: float = 0.260   # 胶囊宽（实测 52 / 200）
     db_capsule_h: float = 0.100   # 胶囊高（实测 20 / 200）
     db_travel_top: float = 0.85   # 胶囊最高点：中轴往上多少倍 half_len（0.85 → 略低于上圆点）
     db_dip_a: float = 0.77        # A 浅下沉：中轴往下多少倍 half_len（1.0 = 下圆点）
     db_dip_b: float = 1.45        # B 深下沉：穿过下圆点
+    db_dip_c: float = 0.50        # C 微下沉：只轻轻下压一点，无任何命中特效
     db_rise_frac: float = 0.71    # 一个节拍周期里「上升」占的比例（实测 0.33s / 0.468s）
     db_fall_ease: float = 0.85    # 下落段缓动指数（<1 = 前段更快）
     db_pop_scale: float = 1.65    # A：命中瞬间圆点膨胀倍率
     db_pop_ms: float = 160.0      # A：膨胀到回弹的总时长
-    db_cap_pop: float = 1.16      # 命中瞬间胶囊自身的轻微膨胀倍率
+    db_cap_pop: float = 1.16      # 命中瞬间胶囊自身的轻微膨胀倍率（A/B）
     db_cap_pop_ms: float = 140.0  # 胶囊膨胀到回弹的总时长
     db_shake_scale: float = 1.12  # B：命中瞬间整体放大倍率
     db_shake_amp: float = 0.025   # B：抖动幅度（相对条高）
     db_shake_hz: float = 30.0     # B：抖动频率（Hz）
     db_shake_ms: float = 220.0    # B：放大+抖动持续时长
-    db_idle_gap_ms: float = 1500.0  # 距下一颗音符超过这么久就停止往复，静止在最低点
+    db_idle_gap_ms: float = 1500.0  # 距下一颗音符超过这么久就停止往复，静止在最高点
     db_ring: bool = False         # 命中扩散圈（参考视频里没有，默认关）
 
     def to_dict(self) -> dict:

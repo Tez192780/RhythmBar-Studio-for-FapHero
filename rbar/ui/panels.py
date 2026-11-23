@@ -209,6 +209,7 @@ class NoteTypePanel(QWidget):
         self.cb_feedback.addItem("自动（按大小建议）", "auto")
         self.cb_feedback.addItem("A · 浅下沉（圆点膨胀）", "A")
         self.cb_feedback.addItem("B · 深下沉（放大+抖动）", "B")
+        self.cb_feedback.addItem("C · 微下沉（无特效）", "C")
         self.cb_feedback.setToolTip(
             "仅哑铃判定点生效：这类音符命中时，长条下沉到浅处还是深处、"
             "以及用哪种命中反馈动画。默认按尺寸给建议，可手动指定。")
@@ -613,6 +614,12 @@ class ChartPanel(QWidget):
         self.sp_bar_h.setSuffix(" px")
         self.sp_bar_h.valueChanged.connect(self._apply_bar_size)
         f3.addRow("条带尺寸", _row(self.sp_bar_w, self.sp_bar_h))
+        self.sl_content = FloatSlider(0.30, 3.00, 1.0, 0.05, 2, "×")
+        self.sl_content.setToolTip(
+            "音符 / 水印 / 计数字号的整体缩放基准。调「条带尺寸」只换画布，"
+            "不会把 Beat 和字体一起放大；要让内容 visibly 更大，用这个滑杆。")
+        self.sl_content.valueChanged.connect(self._apply_render)
+        f3.addRow("内容缩放", self.sl_content)
         root.addWidget(box3)
         root.addStretch(1)
 
@@ -716,6 +723,7 @@ class ChartPanel(QWidget):
         self.sl_beatalpha.setValue(getattr(rs, "beat_counter_alpha", 0.92))
         self.sp_bar_w.setValue(int(rs.width))
         self.sp_bar_h.setValue(int(rs.height))
+        self.sl_content.setValue(getattr(rs, "content_scale", 1.0))
         self.chk_snap.setChecked(self.doc.state.snap_on)
         j = self.cb_snap.findData(self.doc.state.snap_divisor)
         self.cb_snap.setCurrentIndex(max(0, j))
@@ -850,6 +858,7 @@ class ChartPanel(QWidget):
         rs.beat_counter_size = self.sl_beatsize.value()
         rs.beat_counter_color = self.btn_beat.color()
         rs.beat_counter_alpha = self.sl_beatalpha.value()
+        rs.content_scale = self.sl_content.value()
         self.doc.project.export.background = self.cb_bg.currentData()
         self.doc.project.export.bg_color = self.btn_bg.color()
         self.doc.touch("节奏条参数")
@@ -982,14 +991,25 @@ class StylePanel(QWidget):
 
         box2b = QGroupBox("哑铃参数（判定点样式选「哑铃式」时生效）")
         f2b = QFormLayout(box2b)
+        self.btn_dbcolor = ColorButton(str(getattr(js, "db_color", "#e9edf0") or "#e9edf0"))
+        self.btn_dbcolor.setToolTip("哑铃本体的常驻颜色（命中时会按音符颜色短暂染色）")
+        self.btn_dbcolor.colorChanged.connect(self._apply)
+        f2b.addRow("哑铃颜色", self.btn_dbcolor)
+        self.sl_db_circle = FloatSlider(0.015, 0.120,
+                                        getattr(js, "db_circle_r", 0.040), 0.005, 3)
+        self.sl_db_circle.setToolTip("两端圆点的常态半径（相对条高）；嫌小就调大")
+        self.sl_db_circle.valueChanged.connect(self._apply)
+        f2b.addRow("圆点常态大小", self.sl_db_circle)
         self.sl_db_len = FloatSlider(0.10, 0.45, getattr(js, "db_half_len", 0.31), 0.01, 2)
         self.sl_db_len.setToolTip("哑铃长度：中轴到上下圆点的距离（相对条高）；始终以 Beat 中轴上下对称")
         self.sl_db_gscale = FloatSlider(0.50, 2.00, getattr(js, "db_scale", 1.0), 0.05, 2)
         self.sl_db_gscale.setToolTip("哑铃整体大小：圆点、胶囊、杆宽、长度一起缩放")
         self.sl_db_dipa = FloatSlider(0.20, 1.20, getattr(js, "db_dip_a", 0.77), 0.01, 2)
         self.sl_db_dipa.setToolTip("动画 A（浅）：胶囊最低点 = 中轴往下多少倍半长；1.0 正好到下圆点")
-        self.sl_db_dipb = FloatSlider(1.00, 2.20, getattr(js, "db_dip_b", 1.45), 0.01, 2)
+        self.sl_db_dipb = FloatSlider(0.80, 2.20, getattr(js, "db_dip_b", 1.45), 0.01, 2)
         self.sl_db_dipb.setToolTip("动画 B（深）：胶囊最低点；>1 表示穿过下圆点")
+        self.sl_db_dipc = FloatSlider(0.00, 1.00, getattr(js, "db_dip_c", 0.50), 0.01, 2)
+        self.sl_db_dipc.setToolTip("动画 C（微）：只轻轻下压一点，命中时没有任何特效")
         self.sl_db_capw = FloatSlider(0.10, 0.50, getattr(js, "db_capsule_w", 0.26), 0.01, 2)
         self.sl_db_caph = FloatSlider(0.04, 0.24, getattr(js, "db_capsule_h", 0.10), 0.01, 2)
         self.sl_db_cappop = FloatSlider(1.00, 2.00, getattr(js, "db_cap_pop", 1.16), 0.01, 2)
@@ -1004,15 +1024,17 @@ class StylePanel(QWidget):
         self.sl_db_rise.setToolTip("一个节拍内「上升」占的比例，剩下的是下落段")
         self.sl_db_gap = FloatSlider(0.30, 8.00, getattr(js, "db_idle_gap_ms", 1500.0) / 1000.0,
                                      0.1, 1, " s")
-        self.sl_db_gap.setToolTip("距下一颗 Beat 超过这么久时，长条停止往复、静止在最低点")
-        for w in (self.sl_db_len, self.sl_db_gscale, self.sl_db_dipa, self.sl_db_dipb,
-                  self.sl_db_capw, self.sl_db_caph, self.sl_db_cappop, self.sl_db_pop,
-                  self.sl_db_scale, self.sl_db_shake, self.sl_db_rise, self.sl_db_gap):
+        self.sl_db_gap.setToolTip("距下一颗 Beat 超过这么久时，长条停止往复、静止在最高点")
+        for w in (self.sl_db_circle, self.sl_db_len, self.sl_db_gscale, self.sl_db_dipa,
+                  self.sl_db_dipb, self.sl_db_dipc, self.sl_db_capw, self.sl_db_caph,
+                  self.sl_db_cappop, self.sl_db_pop, self.sl_db_scale, self.sl_db_shake,
+                  self.sl_db_rise, self.sl_db_gap):
             w.valueChanged.connect(self._apply)
         f2b.addRow("哑铃长度", self.sl_db_len)
         f2b.addRow("哑铃整体大小", self.sl_db_gscale)
         f2b.addRow("A 浅下沉", self.sl_db_dipa)
         f2b.addRow("B 深下沉", self.sl_db_dipb)
+        f2b.addRow("C 微下沉", self.sl_db_dipc)
         f2b.addRow("胶囊宽度/高度", _row(self.sl_db_capw, self.sl_db_caph))
         f2b.addRow("胶囊膨胀", self.sl_db_cappop)
         f2b.addRow("A 圆点膨胀", self.sl_db_pop)
@@ -1082,10 +1104,13 @@ class StylePanel(QWidget):
         self.chk_idle.setChecked(bool(js.idle))
         i = self.cb_judge_mode.findData(str(getattr(js, "mode", "diamond")))
         self.cb_judge_mode.setCurrentIndex(max(0, i))
+        self.btn_dbcolor.setColor(str(getattr(js, "db_color", "#e9edf0") or "#e9edf0"))
+        self.sl_db_circle.setValue(getattr(js, "db_circle_r", 0.040))
         self.sl_db_len.setValue(getattr(js, "db_half_len", 0.31))
         self.sl_db_gscale.setValue(getattr(js, "db_scale", 1.0))
         self.sl_db_dipa.setValue(getattr(js, "db_dip_a", 0.77))
         self.sl_db_dipb.setValue(getattr(js, "db_dip_b", 1.45))
+        self.sl_db_dipc.setValue(getattr(js, "db_dip_c", 0.50))
         self.sl_db_capw.setValue(getattr(js, "db_capsule_w", 0.26))
         self.sl_db_caph.setValue(getattr(js, "db_capsule_h", 0.10))
         self.sl_db_cappop.setValue(getattr(js, "db_cap_pop", 1.16))
@@ -1160,10 +1185,13 @@ class StylePanel(QWidget):
         js.line_w = self.sl_jw.value()
         js.idle = self.chk_idle.isChecked()
         js.mode = self.cb_judge_mode.currentData()
+        js.db_color = self.btn_dbcolor.color()
+        js.db_circle_r = self.sl_db_circle.value()
         js.db_half_len = self.sl_db_len.value()
         js.db_scale = self.sl_db_gscale.value()
         js.db_dip_a = self.sl_db_dipa.value()
         js.db_dip_b = self.sl_db_dipb.value()
+        js.db_dip_c = self.sl_db_dipc.value()
         js.db_capsule_w = self.sl_db_capw.value()
         js.db_capsule_h = self.sl_db_caph.value()
         js.db_cap_pop = self.sl_db_cappop.value()

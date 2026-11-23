@@ -178,6 +178,9 @@ class RenderSettings:
     tick_alpha: float = 0.22
     judge_ratio: float = 0.5     # 判定点横向位置（0.5 = 正中）
     hide_before: float = 0.0     # 提前隐藏（毫秒，0=不隐藏，走到底自然出画）
+    # 内容缩放：音符 / 文字这类"内容"的尺寸基准。1.0 = 按 120px 高的基准尺寸，
+    # 所以调「条带尺寸」只会换画布、不会把 Beat 和字体一起放大。
+    content_scale: float = 1.0
     # 判定点之后的速度倍率：1 = 与判定点前同速；>1 = 过了判定点加速离场
     # （参考视频里音符命中后是「嗖」地一下飞走，约 3.8 倍）
     post_speed: float = 1.0
