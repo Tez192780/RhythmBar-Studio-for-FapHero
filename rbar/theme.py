@@ -115,13 +115,14 @@ class JudgeStyle:
     db_fall_ease: float = 0.85    # 下落段缓动指数（<1 = 前段更快）
     db_pop_scale: float = 1.65    # A：命中瞬间圆点膨胀倍率
     db_pop_ms: float = 160.0      # A：膨胀到回弹的总时长
-    db_cap_pop: float = 1.16      # 命中瞬间胶囊自身的轻微膨胀倍率（A/B）
-    db_cap_pop_ms: float = 140.0  # 胶囊膨胀到回弹的总时长
+    db_cap_pop: float = 1.16      # 命中瞬间胶囊自身的膨胀倍率（A/B）
+    db_cap_pop_ms: float = 140.0  # 胶囊从最大膨胀回落到原尺寸的时长
     db_shake_scale: float = 1.12  # B：命中瞬间整体放大倍率
     db_shake_amp: float = 0.025   # B：抖动幅度（相对条高）
     db_shake_hz: float = 30.0     # B：抖动频率（Hz）
     db_shake_ms: float = 220.0    # B：放大+抖动持续时长
     db_idle_gap_ms: float = 1500.0  # 距下一颗音符超过这么久就停止往复，静止在最高点
+    db_idle_glide_ms: float = 400.0  # 进出空闲时，从当前位置平滑滑到目标位置的时长
     db_ring: bool = False         # 命中扩散圈（参考视频里没有，默认关）
 
     def to_dict(self) -> dict:

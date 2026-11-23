@@ -49,7 +49,8 @@ from ..audio import (
     peaks,
 )
 from ..doc import Doc
-from ..exporter import compute_range, estimate_size_mb, export_still, export_video
+from ..exporter import (check_output_writable, compute_range, estimate_size_mb,
+                        export_still, export_video)
 from ..model import FORMATS, ExportSettings, Note, Project
 from ..settings import AppSettings
 from ..tasks import Task
@@ -2094,6 +2095,13 @@ class MainWindow(QMainWindow):
 
     def _run_export(self, t0: float, t1: float, frames: int) -> None:
         ex = self.doc.project.export
+        # 先检查输出位置能不能写：避免渲染完几万帧才在最后一步失败
+        problem = check_output_writable(ex.output)
+        if problem:
+            self._warn(i18n.tr("无法写入输出位置"),
+                       problem + i18n.tr("\n\n请在「导出」面板里换一个目录（例如「视频」或桌面）后重试。"))
+            self.tabs.setCurrentWidget(self.panel_export)
+            return
         dlg = QProgressDialog(i18n.tr("正在导出…"), i18n.tr("取消"), 0, frames, self)
         dlg.setWindowTitle(i18n.tr("导出视频"))
         dlg.setWindowModality(Qt.WindowModal)

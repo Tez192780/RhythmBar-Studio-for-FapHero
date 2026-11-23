@@ -1025,10 +1025,15 @@ class StylePanel(QWidget):
         self.sl_db_gap = FloatSlider(0.30, 8.00, getattr(js, "db_idle_gap_ms", 1500.0) / 1000.0,
                                      0.1, 1, " s")
         self.sl_db_gap.setToolTip("距下一颗 Beat 超过这么久时，长条停止往复、静止在最高点")
+        self.sl_db_glide = FloatSlider(0.00, 2.00, getattr(js, "db_idle_glide_ms", 400.0) / 1000.0, 0.05, 2, " s")
+        self.sl_db_glide.setToolTip("进出空闲时，长条从当前位置平滑滑到目标位置所用的时间（0 = 直接跳）")
+        self.sl_db_cappopms = FloatSlider(0.04, 0.60, getattr(js, "db_cap_pop_ms", 140.0) / 1000.0, 0.01, 2, " s")
+        self.sl_db_cappopms.setToolTip("命中瞬间胶囊从最大膨胀回落到原尺寸的时间")
         for w in (self.sl_db_circle, self.sl_db_len, self.sl_db_gscale, self.sl_db_dipa,
                   self.sl_db_dipb, self.sl_db_dipc, self.sl_db_capw, self.sl_db_caph,
                   self.sl_db_cappop, self.sl_db_pop, self.sl_db_scale, self.sl_db_shake,
-                  self.sl_db_rise, self.sl_db_gap):
+                  self.sl_db_rise, self.sl_db_gap, self.sl_db_glide,
+                  self.sl_db_cappopms):
             w.valueChanged.connect(self._apply)
         f2b.addRow("哑铃长度", self.sl_db_len)
         f2b.addRow("哑铃整体大小", self.sl_db_gscale)
@@ -1042,6 +1047,8 @@ class StylePanel(QWidget):
         f2b.addRow("B 抖动幅度", self.sl_db_shake)
         f2b.addRow("上升占比", self.sl_db_rise)
         f2b.addRow("空闲静止阈值", self.sl_db_gap)
+        f2b.addRow("空闲滑动时长", self.sl_db_glide)
+        f2b.addRow("胶囊膨胀时长", self.sl_db_cappopms)
         root.addWidget(box2b)
 
         gs = self.doc.project.theme.ghost
@@ -1119,6 +1126,8 @@ class StylePanel(QWidget):
         self.sl_db_shake.setValue(getattr(js, "db_shake_amp", 0.025))
         self.sl_db_rise.setValue(getattr(js, "db_rise_frac", 0.71))
         self.sl_db_gap.setValue(getattr(js, "db_idle_gap_ms", 1500.0) / 1000.0)
+        self.sl_db_glide.setValue(getattr(js, "db_idle_glide_ms", 400.0) / 1000.0)
+        self.sl_db_cappopms.setValue(getattr(js, "db_cap_pop_ms", 140.0) / 1000.0)
         i = self.cb_judge_shape.findData(js.shape)
         self.cb_judge_shape.setCurrentIndex(max(0, i))
         self.lbl_judge_img.setText(os.path.basename(js.image) if js.image else tr("未设置"))
@@ -1200,6 +1209,8 @@ class StylePanel(QWidget):
         js.db_shake_amp = self.sl_db_shake.value()
         js.db_rise_frac = self.sl_db_rise.value()
         js.db_idle_gap_ms = self.sl_db_gap.value() * 1000.0
+        js.db_idle_glide_ms = self.sl_db_glide.value() * 1000.0
+        js.db_cap_pop_ms = self.sl_db_cappopms.value() * 1000.0
         js.shape = self.cb_judge_shape.currentData()
         js.idle_color = self.btn_idle.color()
         js.idle_scale = self.sl_idle_scale.value()

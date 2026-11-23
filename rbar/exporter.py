@@ -28,6 +28,53 @@ from .render import BarRenderer
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
+# ------------------------------------------------------------ 输出位置可写性
+def check_output_writable(out_path: str) -> str:
+    """在开渲染之前先确认输出位置能写。
+
+    返回空字符串 = 可以写；否则返回一句能直接给用户看的原因。
+    （Windows 上「拒绝访问」常见于：目标在受保护目录、被 Windows「受控文件夹访问」
+    拦截、文件被播放器占用、或目录只读。）
+    """
+    raw = str(out_path or "").strip()
+    if not raw:
+        return "没有指定输出文件"
+    path = os.path.abspath(raw)
+    folder = os.path.dirname(path) or "."
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except OSError as e:
+        return f"无法创建目录 {folder}：{e.strerror or e}"
+    probe = os.path.join(folder, f".rbar_write_test_{os.getpid()}")
+    try:
+        with open(probe, "wb") as f:
+            f.write(b"0")
+        os.remove(probe)
+    except OSError as e:
+        return f"目录不可写 {folder}：{e.strerror or e}"
+    if os.path.exists(path):
+        try:
+            with open(path, "ab"):
+                pass
+        except OSError as e:
+            return f"目标文件被占用或只读 {path}：{e.strerror or e}"
+    return ""
+
+
+def _permission_hint(errors: list[str], out_path: str) -> str:
+    """从 ffmpeg 的报错里认出权限类问题，给一句人话建议。"""
+    blob = "\n".join(errors).lower()
+    if "permission denied" in blob or "access is denied" in blob or "拒绝访问" in blob:
+        return ("\n\n输出位置写不进去（Permission denied）。常见原因：\n"
+                "· 目标文件夹是受保护目录（Program Files、系统盘根目录等）\n"
+                "· 被 Windows「受控文件夹访问 / 勒索软件防护」拦住了\n"
+                f"  （安全中心 → 病毒和威胁防护 → 管理勒索软件防护 → 允许应用通过）\n"
+                "· 同名文件正在被播放器/剪辑软件占用\n"
+                f"\n换个目录试试，例如「视频」或桌面：{out_path}")
+    return ""
+
+
+
 # ------------------------------------------------------------------ 命令构建
 def _quality_preset(fmt: str, quality: str) -> list[str]:
     q = quality if quality in ("fast", "balanced", "high") else "high"
@@ -244,6 +291,11 @@ def export_video(
     target_dir = os.path.dirname(os.path.abspath(out_path))
     if target_dir:
         os.makedirs(target_dir, exist_ok=True)
+    # 先验证能不能写，别等渲染完几万帧才在最后一步报「拒绝访问」
+    problem = check_output_writable(out_path)
+    if problem:
+        raise RuntimeError("无法写入输出文件：\n" + problem
+                           + "\n\n请在「导出」面板里换一个目录（例如「视频」或桌面）。")
     cmd = build_command(ex.fmt, w, h, fps, ex.quality, out_path, ff)
 
     errors: list[str] = []
@@ -306,10 +358,10 @@ def export_video(
             return ExportResult(out_path, done, time.time() - started, True)
         if code != 0:
             tail = "\n".join(errors[-6:]) or f"ffmpeg 退出码 {code}"
-            raise RuntimeError("导出失败：\n" + tail)
+            raise RuntimeError("导出失败：\n" + tail + _permission_hint(errors, out_path))
     except BrokenPipeError:
         tail = "\n".join(errors[-6:])
-        raise RuntimeError("ffmpeg 提前退出：\n" + tail)
+        raise RuntimeError("ffmpeg 提前退出：\n" + tail + _permission_hint(errors, out_path))
     finally:
         try:
             if proc.poll() is None:

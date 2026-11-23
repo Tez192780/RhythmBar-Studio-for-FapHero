@@ -577,25 +577,45 @@ class BarRenderer:
     def _capsule_ynorm(self, t_ms: float) -> float:
         """胶囊中心高度（相对条高）。缓升 + 加速下落，Beat 到达时正好在最低点。
 
-        静止状态下恒定为最低点（不往复）。
+        进出空闲（前面/后面没有 Beat、或间隔太长）时不跳变：
+        在 db_idle_glide_ms 内平滑滑向最高点，或从最高点平滑落向「即将到来的那一拍」。
         """
         js: JudgeStyle = self.th.judge
         frac, prev_note, next_note, idle = self._judge_phase(t_ms)
         half = max(0.01, float(getattr(js, "db_half_len", 0.31))
                    * max(0.2, float(getattr(js, "db_scale", 1.0))))
         top = 0.5 - max(0.05, float(getattr(js, "db_travel_top", 0.85))) * half
+
+        def dip(note: Note | None) -> float:
+            return 0.5 + self._dip_mult(note) * half
+
         if idle:
-            return top          # 空闲时停在最高点（停在最低点会让第一拍很难看）
+            # 平滑过渡：刚过完一颗 → 从最低点升回最高点；快要来下一颗 → 从最高点落下去
+            glide = max(0.0, float(getattr(js, "db_idle_glide_ms", 400.0)))
+            if glide <= 0.0:
+                return top
+            if prev_note is not None:
+                since = t_ms - float(prev_note.t)
+                if 0.0 <= since < glide:
+                    u = since / glide
+                    return dip(prev_note) + (top - dip(prev_note)) * (u * u * (3.0 - 2.0 * u))
+            if next_note is not None:
+                left = float(next_note.t) - t_ms
+                if 0.0 <= left < glide:
+                    u = 1.0 - left / glide
+                    return top + (dip(next_note) - top) * (u * u * (3.0 - 2.0 * u))
+            return top
+
         rise = max(0.05, min(0.95, float(getattr(js, "db_rise_frac", 0.71))))
         if frac < rise:
-            dip = 0.5 + self._dip_mult(prev_note) * half      # 刚从最低点往上走
+            d = dip(prev_note)                                # 刚从最低点往上走
             u = frac / rise
             k = u * u * (3.0 - 2.0 * u)                       # smoothstep
-            return dip + (top - dip) * k
-        dip = 0.5 + self._dip_mult(next_note) * half          # 正在砸向下一颗
+            return d + (top - d) * k
+        d = dip(next_note)                                    # 正在砸向下一颗
         u = (frac - rise) / (1.0 - rise)
         k = u ** max(0.2, float(getattr(js, "db_fall_ease", 0.85)))
-        return top + (dip - top) * k
+        return top + (d - top) * k
 
     def _dumbbell_feedback(self, st: NoteStyle | None, dt: float, h: float,
                            hit: bool) -> tuple[float, float, float, float, float]:
@@ -615,13 +635,12 @@ class BarRenderer:
             # 微下沉：不加任何命中特效（不膨胀圆点、不整体放大、也不抖）
             return 1.0, 1.0, 0.0, 0.0, 1.0
 
-        # 胶囊膨胀（A/B 通用）
+        # 胶囊膨胀：命中（= 胶囊最低点）的那一帧就是最大值，之后平滑回落
         cap_total = float(getattr(js, "db_cap_pop_ms", 140.0))
         cap_pop = 1.0
         if cap_total > 0:
             u = min(1.0, max(0.0, dt / cap_total))
-            cap_pop = 1.0 + (float(getattr(js, "db_cap_pop", 1.16)) - 1.0) * math.sin(
-                math.pi * u)
+            cap_pop = 1.0 + (float(getattr(js, "db_cap_pop", 1.16)) - 1.0) * (1.0 - u) ** 1.6
 
         if kind == "A":
             total = float(getattr(js, "db_pop_ms", 160.0))

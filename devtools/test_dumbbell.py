@@ -104,6 +104,29 @@ def main() -> int:
     check("空闲时停在最高点（第一拍前的静止位）", abs(y_far1 - top_n) < 0.01,
           f"{y_far1:.3f} vs top {top_n:.3f}")
 
+    # 平滑过渡：最后一颗之后应当「逐渐」升到最高点，而不是瞬移
+    glide = float(js.db_idle_glide_ms)
+    seq = [r._capsule_ynorm(last_t + glide * k / 8.0) for k in range(9)]
+    check("空闲过渡从最低点起步", abs(seq[0] - dip_a_n) < 0.01, f"{seq[0]:.3f}")
+    check("空闲过渡在设定时长后到达最高点", abs(seq[-1] - top_n) < 0.01, f"{seq[-1]:.3f}")
+    check("空闲过渡是单调的（不会来回跳）",
+          all(seq[i] >= seq[i + 1] - 1e-9 for i in range(len(seq) - 1)),
+          f"{[round(v, 2) for v in seq]}")
+
+    # 反过来：第一颗之前应当从最高点平滑落下去
+    first_t = min(n.t for n in p.chart.notes)
+    pre = [r._capsule_ynorm(first_t - glide * (8 - k) / 8.0) for k in range(9)]
+    check("首拍前从最高点起步", abs(pre[0] - top_n) < 0.01, f"{pre[0]:.3f}")
+    check("首拍时正好落到最低点", abs(pre[-1] - dip_a_n) < 0.01, f"{pre[-1]:.3f}")
+    check("首拍前过渡单调（越来越低）",
+          all(pre[i] <= pre[i + 1] + 1e-9 for i in range(len(pre) - 1)),
+          f"{[round(v, 2) for v in pre]}")
+    # 把 glide 设成 0 时应当直接跳（老行为，供对比）
+    js.db_idle_glide_ms = 0.0
+    check("滑动时长设 0 时直接停在最高点",
+          abs(r._capsule_ynorm(last_t + 1.0) - top_n) < 0.01)
+    js.db_idle_glide_ms = glide
+
     # 插入一颗很远的音符，间隔超过阈值 → 中间依然静止
     far = Note(last_t + 5000.0, p.theme.active_rows()[0], 0)
     p.chart.add(far)
@@ -133,15 +156,16 @@ def main() -> int:
     check("B：抖动来回摆", min(xs) < -0.01 and max(xs) > 0.01,
           f"min={min(xs):.2f} max={max(xs):.2f}")
 
-    # 胶囊膨胀：A/B 有，C 没有
+    # 胶囊膨胀：命中瞬间就是最大值，随后单调回落（A/B 有，C 没有）
     for kind in ("A", "B"):
         st.feedback = kind
         c0 = r._dumbbell_feedback(st, 0.0, H, True)[4]
         cm = r._dumbbell_feedback(st, js.db_cap_pop_ms / 2, H, True)[4]
         c9 = r._dumbbell_feedback(st, js.db_cap_pop_ms + 1, H, True)[4]
-        check(f"{kind}：胶囊命中时也轻微膨胀", abs(c0 - 1.0) < 1e-6
-              and abs(cm - js.db_cap_pop) < 0.02 and abs(c9 - 1.0) < 1e-6,
-              f"{c0:.2f} -> {cm:.2f} -> {c9:.2f}")
+        check(f"{kind}：胶囊在命中瞬间膨胀到最大", abs(c0 - js.db_cap_pop) < 1e-9,
+              f"{c0:.3f} vs {js.db_cap_pop:.3f}")
+        check(f"{kind}：之后单调回落", c0 > cm > c9 and abs(c9 - 1.0) < 1e-9,
+              f"{c0:.3f} -> {cm:.3f} -> {c9:.3f}")
 
     # ------------------------------------------------------ C 微下沉
     st.feedback = "C"
