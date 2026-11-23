@@ -14,6 +14,7 @@ from PySide6.QtGui import (
     QBrush,
     QColor,
     QFont,
+    QFontMetricsF,
     QLinearGradient,
     QPainter,
     QPainterPath,
@@ -395,6 +396,145 @@ class BarRenderer:
         f.setBold(bold)
         return f
 
+    # ------------------------------------------------------------ 统计分段
+    def stat_segments(self) -> list:
+        segs = list(getattr(self.rs, "stat_segments", None) or [])
+        return sorted(segs, key=lambda s: float(getattr(s, "start_ms", 0.0)))
+
+    def stat_segment_at(self, t_ms: float) -> tuple[int, object | None]:
+        """返回 (段序号 0 起, 段对象)；不在任何段里返回 (-1, None)。"""
+        for i, seg in enumerate(self.stat_segments()):
+            st = float(getattr(seg, "start_ms", 0.0))
+            en = float(getattr(seg, "end_ms", 0.0))
+            if float(t_ms) >= st and (en <= st or float(t_ms) < en):
+                return i, seg
+        return -1, None
+
+    def _duration_ms(self) -> float:
+        end = max(self.p.media_end_ms(), float(self.p.audio_duration_ms or 0.0))
+        notes = self.p.chart.notes
+        if notes:
+            end = max(end, max(n.end for n in notes))
+        return max(1.0, end)
+
+    def stats(self, t_ms: float) -> dict:
+        """统计口径集中在这里，计数显示与进度条共用。"""
+        chart = self.p.chart
+        times = [n.t for n in chart.notes]
+        total_passed = sum(1 for x in times if x <= t_ms)
+        total_all = len(times)
+        idx, seg = self.stat_segment_at(t_ms)
+        duration = self._duration_ms()
+        if seg is not None:
+            st = float(getattr(seg, "start_ms", 0.0))
+            en = float(getattr(seg, "end_ms", 0.0))
+            if en <= st:
+                # 开放式段落（到结尾）：不设上界，否则最后一颗音符会被排除
+                seg_all = sum(1 for x in times if st <= x)
+                seg_passed = sum(1 for x in times if st <= x <= t_ms)
+                en = duration
+            else:
+                seg_all = sum(1 for x in times if st <= x < en)
+                seg_passed = sum(1 for x in times if st <= x <= t_ms and x < en)
+            seg_elapsed = max(0.0, float(t_ms) - st)
+            seg_span = max(1.0, en - st)
+        else:
+            st, en = 0.0, duration
+            seg_all = total_all
+            seg_passed = total_passed
+            seg_elapsed = float(t_ms)
+            seg_span = duration
+        return {
+            "total_passed": total_passed,
+            "total_all": total_all,
+            "seg_index": idx,
+            "seg_all": seg_all,
+            "seg_passed": seg_passed,
+            "seg_elapsed": seg_elapsed,
+            "seg_span": seg_span,
+            "now": float(t_ms),
+            "duration": duration,
+        }
+
+    def _count_text(self, t_ms: float) -> str:
+        rs = self.rs
+        info = self.stats(t_ms)
+        label = str(getattr(rs, "beat_counter_label", "BEAT") or "").strip() or "BEAT"
+        display = str(getattr(rs, "beat_counter_display", "total") or "total")
+        if display == "segment":
+            n = info["seg_passed"] if info["seg_index"] >= 0 else info["total_passed"]
+            body = f"{label} {n}"
+        elif display == "both":
+            body = f"{label} {info['seg_passed']} // {info['total_passed']}"
+        else:
+            if str(getattr(rs, "beat_counter_mode", "notes")) == "beats":
+                clip = self.p.audio_clip_at(t_ms)
+                if clip is not None:
+                    b = clip.timemap.beat(clip.timeline_to_source(t_ms))
+                else:
+                    b = self.p.chart.timemap.beat(t_ms)
+                body = f"{label} {max(0, int(b))}"
+            else:
+                body = f"{label} {info['total_passed']}"
+        if bool(getattr(rs, "beat_counter_show_phase", False)):
+            phase = info["seg_index"] + 1 if info["seg_index"] >= 0 else 1
+            body = f"Phase {phase}    {body}"
+        return body
+
+    def _draw_progress(self, p: QPainter, w: float, h: float, t_ms: float) -> None:
+        rs = self.rs
+        if not getattr(rs, "progress_bar", False):
+            return
+        info = self.stats(t_ms)
+        mode = str(getattr(rs, "progress_mode", "beats") or "beats")
+        if mode == "time":
+            frac = info["now"] / info["duration"]
+        elif mode == "seg_time":
+            frac = info["seg_elapsed"] / info["seg_span"]
+        elif mode == "seg_beats":
+            frac = info["seg_passed"] / info["seg_all"] if info["seg_all"] else 0.0
+        else:
+            frac = info["total_passed"] / info["total_all"] if info["total_all"] else 0.0
+        frac = max(0.0, min(1.0, float(frac)))
+
+        k = self.content_h(h) / 120.0          # 进度条尺寸按内容缩放
+        bw = max(4.0, float(getattr(rs, "progress_w", 400.0)) * k)
+        bh = max(2.0, float(getattr(rs, "progress_h", 40.0)) * k)
+        cx = w * max(0.0, min(1.0, float(getattr(rs, "progress_x", 0.5))))
+        cy = h * max(0.0, min(1.0, float(getattr(rs, "progress_y", 0.88))))
+        rect = QRectF(cx - bw * 0.5, cy - bh * 0.5, bw, bh)
+        radius = bh * 0.5 if bool(getattr(rs, "progress_round", True)) else 0.0
+
+        p.save()
+        p.setOpacity(max(0.0, min(1.0, float(getattr(rs, "progress_opacity", 0.85)))))
+        # 填充
+        if frac > 0.0005:
+            fw = bw * frac
+            fill = QRectF(rect.left(), rect.top(), fw, bh)
+            path = QPainterPath()
+            if radius > 0.5 and fw >= bh:
+                path.addRoundedRect(fill, radius, radius)
+            else:
+                path.addRect(fill)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QBrush(qc(str(getattr(rs, "progress_fill", "#5ad1ff")))))
+            p.drawPath(path)
+        # 边框
+        border_w = max(0.0, float(getattr(rs, "progress_border_w", 0.06)) * bh)
+        if border_w > 0.05:
+            outline = QPainterPath()
+            if radius > 0.5:
+                outline.addRoundedRect(rect, radius, radius)
+            else:
+                outline.addRect(rect)
+            pen = QPen(qc(str(getattr(rs, "progress_border_color", "#ffffff")),
+                          max(0.0, min(1.0, float(getattr(rs, "progress_border_alpha", 0.8))))),
+                       border_w)
+            p.setPen(pen)
+            p.setBrush(Qt.NoBrush)
+            p.drawPath(outline)
+        p.restore()
+
     def _draw_overlays(self, p: QPainter, w: float, h: float, t_ms: float) -> None:
         rs = self.rs
         text = str(getattr(rs, "watermark_text", "") or "")
@@ -407,16 +547,23 @@ class BarRenderer:
                         max(0.0, min(1.0, float(getattr(rs, "watermark_alpha", 0.55))))))
             p.drawText(rect, flags, text)
         if getattr(rs, "beat_counter", False):
-            n = self.beat_count(t_ms)
-            label = str(getattr(rs, "beat_counter_label", "BEAT") or "").strip()
-            body = f"{label} {n}" if label else str(n)
+            body = self._count_text(t_ms)
             size = max(1.0, float(getattr(rs, "beat_counter_size", 0.14)) * self.content_h(h))
-            rect, flags = self._text_rect(str(getattr(rs, "beat_counter_pos", "bottom_right")),
-                                          w, h, size)
-            p.setFont(self._corner_font(size, bold=True))
+            font = self._corner_font(size, bold=True)
+            p.setFont(font)
             p.setPen(qc(str(getattr(rs, "beat_counter_color", "#ffffff") or "#ffffff"),
                         max(0.0, min(1.0, float(getattr(rs, "beat_counter_alpha", 0.92))))))
-            p.drawText(rect, flags, body)
+            fx = float(getattr(rs, "beat_counter_x", 0.94))
+            fy = float(getattr(rs, "beat_counter_y", 0.90))
+            cx = w * max(0.0, min(1.0, fx))
+            cy = h * max(0.0, min(1.0, fy))
+            # 以 (cx, cy) 为锚点：偏右时文字右对齐、偏左时左对齐，垂直居中
+            fm = QFontMetricsF(font)
+            tw = fm.horizontalAdvance(body)
+            x0 = cx - tw if fx >= 0.5 else cx
+            baseline = cy + (fm.ascent() - fm.descent()) * 0.5
+            p.drawText(QPointF(x0, baseline), body)
+        self._draw_progress(p, w, h, t_ms)
 
     def beat_count(self, t_ms: float) -> int:
         """角落实时计数：notes = 已命中音符数；beats = 按 BPM 的拍号（从 0 起）。"""

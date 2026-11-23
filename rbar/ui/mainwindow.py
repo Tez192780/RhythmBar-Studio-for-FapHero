@@ -58,7 +58,8 @@ from ..theme import Theme
 from ..timing import BpmSegment
 from ..updater import PAGE as RELEASES_PAGE, pick_asset
 from .dialogs import BpmSegmentDialog, FillRangeDialog, TapTempoDialog
-from .panels import ChartPanel, ExportPanel, NoteTypePanel, SettingsPanel, StylePanel
+from .panels import (ChartPanel, ExportPanel, NoteTypePanel, SettingsPanel,
+                     StatsPanel, StylePanel)
 from .preview import PreviewWidget, RefFrameWidget, SpectrumWidget
 from .timeline import TimelineWidget, fmt_time
 
@@ -196,11 +197,14 @@ class MainWindow(QMainWindow):
         self.panel_chart = ChartPanel(self.doc)
         self.panel_style = StylePanel(self.doc)
         self.panel_style.time_provider = lambda: self.position_ms
+        self.panel_stats = StatsPanel(self.doc)
+        self.panel_stats.time_provider = lambda: self.position_ms
         self.panel_export = ExportPanel(self.doc)
         self.panel_settings = SettingsPanel(self.doc, self.settings)
         tabs = QTabWidget()
         tabs.addTab(self.panel_chart, "谱面 / BPM")
         tabs.addTab(self.panel_style, "外观")
+        tabs.addTab(self.panel_stats, "文字与统计")
         tabs.addTab(self.panel_export, "导出")
         tabs.addTab(self.panel_settings, "设置")
         dock2 = QDockWidget("工程设置", self)
@@ -452,6 +456,8 @@ class MainWindow(QMainWindow):
         self.panel_chart.autoBpmRequested.connect(self.auto_bpm)
         self.panel_chart.clipSplitRequested.connect(self.split_selected_clip)
         self.panel_style.changed.connect(self.on_visual_changed)
+        self.panel_stats.changed.connect(self.on_visual_changed)
+        self.panel_stats.renderChanged.connect(self._capture_export_defaults)
         self.panel_style.seekRequested.connect(self.seek)
         self.panel_export.changed.connect(self._on_export_changed)
         self.panel_export.exportRequested.connect(self.export_dialog)

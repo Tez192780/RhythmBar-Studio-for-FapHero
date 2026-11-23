@@ -167,6 +167,23 @@ class Chart:
 
 # ----------------------------------------------------------------- 渲染设置
 @dataclass
+class StatSegment:
+    """Beats 统计用的分段（只管统计，不影响判定区分段）。end<=start 表示到结尾。"""
+
+    start_ms: float = 0.0
+    end_ms: float = 0.0
+
+    def to_dict(self) -> dict:
+        return {"start_ms": round(float(self.start_ms), 3),
+                "end_ms": round(float(self.end_ms), 3)}
+
+    @staticmethod
+    def from_dict(d: dict) -> "StatSegment":
+        return StatSegment(float(d.get("start_ms", 0.0) or 0.0),
+                           float(d.get("end_ms", 0.0) or 0.0))
+
+
+@dataclass
 class RenderSettings:
     width: int = 1920
     height: int = 120
@@ -192,12 +209,31 @@ class RenderSettings:
     watermark_alpha: float = 0.55
     # 角落实时 Beat 计数
     beat_counter: bool = False
-    beat_counter_pos: str = "bottom_right"
+    beat_counter_pos: str = "bottom_right"   # 旧版四角位置（新工程用下面的 X/Y）
     beat_counter_size: float = 0.14
     beat_counter_color: str = "#ffffff"
     beat_counter_alpha: float = 0.92
     beat_counter_mode: str = "notes"      # notes = 已命中音符数；beats = 按 BPM 的拍号
     beat_counter_label: str = "BEAT"
+    beat_counter_x: float = 0.94          # 位置，0~1（相对条带宽/高，作为文本中心）
+    beat_counter_y: float = 0.90
+    beat_counter_show_phase: bool = False  # 在 Beats 前面加 "Phase N"
+    beat_counter_display: str = "total"    # total | segment | both（分段时显示哪种）
+    # Beats 统计用的分段（与判定区分段无关）
+    stat_segments: list[StatSegment] = field(default_factory=list)
+    # 可视化进度条
+    progress_bar: bool = False
+    progress_w: float = 400.0             # 像素（按内容缩放）
+    progress_h: float = 40.0
+    progress_x: float = 0.5               # 中心点，0~1
+    progress_y: float = 0.88
+    progress_round: bool = True           # 圆角（半径 = 高度一半）
+    progress_opacity: float = 0.85        # 整体透明度
+    progress_fill: str = "#5ad1ff"
+    progress_border_w: float = 0.02       # 相对高度
+    progress_border_color: str = "#ffffff"
+    progress_border_alpha: float = 0.8
+    progress_mode: str = "beats"          # time | beats | seg_time | seg_beats
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -206,8 +242,14 @@ class RenderSettings:
     def from_dict(d: dict) -> "RenderSettings":
         base = RenderSettings()
         for k, v in (d or {}).items():
+            if k == "stat_segments":
+                continue                      # 嵌套对象单独反序列化
             if hasattr(base, k):
                 setattr(base, k, v)
+        segs = (d or {}).get("stat_segments")
+        if isinstance(segs, list):
+            base.stat_segments = [StatSegment.from_dict(x) for x in segs
+                                  if isinstance(x, dict)]
         return base
 
 

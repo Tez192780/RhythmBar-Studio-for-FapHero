@@ -45,7 +45,6 @@ from .dialogs import choose_skin_image
 
 from PySide6.QtWidgets import QMessageBox  # noqa: E402
 
-
 # --------------------------------------------------------------------- 基础控件
 class FloatSlider(QWidget):
     """滑块 + 数字输入，既能拖也能精确输入。"""
@@ -103,7 +102,6 @@ class FloatSlider(QWidget):
         self.spin.blockSignals(False)
         self.slider.blockSignals(False)
 
-
 class ColorButton(QPushButton):
     colorChanged = Signal(str)
 
@@ -134,14 +132,12 @@ class ColorButton(QPushButton):
             self.setColor(c.name())
             self.colorChanged.emit(self._color)
 
-
 def _scroll(inner: QWidget) -> QScrollArea:
     sa = QScrollArea()
     sa.setWidgetResizable(True)
     sa.setFrameShape(QFrame.NoFrame)
     sa.setWidget(inner)
     return sa
-
 
 def _row(*widgets) -> QWidget:
     w = QWidget()
@@ -151,7 +147,6 @@ def _row(*widgets) -> QWidget:
     for x in widgets:
         lay.addWidget(x)
     return w
-
 
 # ------------------------------------------------------------------ 音符类型
 class NoteTypePanel(QWidget):
@@ -434,7 +429,6 @@ class NoteTypePanel(QWidget):
         self.changed.emit()
         self.orderChanged.emit()
 
-
 # ------------------------------------------------------------------ 谱面 BPM
 class ChartPanel(QWidget):
     """谱面设置：BPM 段、offset、吸附、流速、流向。"""
@@ -561,52 +555,6 @@ class ChartPanel(QWidget):
         self.sl_post.valueChanged.connect(self._apply_render)
         f3.addRow("判定点后流速", self.sl_post)
 
-        # 角落水印文字
-        self.ed_wm = QLineEdit()
-        self.ed_wm.setPlaceholderText("留空则不显示")
-        self.ed_wm.setToolTip("显示在角落的自由输入文字（水印）")
-        self.ed_wm.editingFinished.connect(self._apply_render)
-        self.cb_wmpos = QComboBox()
-        for label, key in (("左下", "bottom_left"), ("右下", "bottom_right"),
-                           ("左上", "top_left"), ("右上", "top_right")):
-            self.cb_wmpos.addItem(label, key)
-        self.cb_wmpos.currentIndexChanged.connect(self._apply_render)
-        f3.addRow("水印文字", _row(self.ed_wm, self.cb_wmpos))
-        self.sl_wmsize = FloatSlider(0.04, 0.60, 0.14, 0.01, 2)
-        self.sl_wmsize.setToolTip("字号，相对节奏条高度")
-        self.sl_wmsize.valueChanged.connect(self._apply_render)
-        self.btn_wm = ColorButton("#ffffff")
-        self.btn_wm.colorChanged.connect(self._apply_render)
-        f3.addRow("水印字号/颜色", _row(self.sl_wmsize, self.btn_wm))
-        self.sl_wmalpha = FloatSlider(0.0, 1.0, 0.55, 0.01, 2)
-        self.sl_wmalpha.setToolTip("水印透明度")
-        self.sl_wmalpha.valueChanged.connect(self._apply_render)
-        f3.addRow("水印透明度", self.sl_wmalpha)
-
-        # 角落实时 Beat 计数
-        self.chk_beat = QCheckBox("显示")
-        self.chk_beat.toggled.connect(self._apply_render)
-        self.cb_beatpos = QComboBox()
-        for label, key in (("右下", "bottom_right"), ("左下", "bottom_left"),
-                           ("右上", "top_right"), ("左上", "top_left")):
-            self.cb_beatpos.addItem(label, key)
-        self.cb_beatpos.currentIndexChanged.connect(self._apply_render)
-        f3.addRow("Beat 计数", _row(self.chk_beat, self.cb_beatpos))
-        self.cb_beatmode = QComboBox()
-        self.cb_beatmode.addItem("已命中音符数", "notes")
-        self.cb_beatmode.addItem("按 BPM 的拍号", "beats")
-        self.cb_beatmode.currentIndexChanged.connect(self._apply_render)
-        self.sl_beatsize = FloatSlider(0.04, 0.60, 0.14, 0.01, 2)
-        self.sl_beatsize.setToolTip("字号，相对节奏条高度")
-        self.sl_beatsize.valueChanged.connect(self._apply_render)
-        f3.addRow("计数方式/字号", _row(self.cb_beatmode, self.sl_beatsize))
-        self.btn_beat = ColorButton("#ffffff")
-        self.btn_beat.colorChanged.connect(self._apply_render)
-        self.sl_beatalpha = FloatSlider(0.0, 1.0, 0.92, 0.01, 2)
-        self.sl_beatalpha.setToolTip("计数文字透明度")
-        self.sl_beatalpha.valueChanged.connect(self._apply_render)
-        f3.addRow("计数颜色/透明度", _row(self.btn_beat, self.sl_beatalpha))
-
         # 节奏条本身的画布尺寸（哑铃之类的纵向元素需要足够的高度）
         self.sp_bar_w = QSpinBox()
         self.sp_bar_w.setRange(320, 3840)
@@ -712,20 +660,6 @@ class ChartPanel(QWidget):
         self.cb_bg.setCurrentIndex(max(0, i))
         self.btn_bg.setColor(self.doc.project.export.bg_color)
         self.sl_post.setValue(getattr(rs, "post_speed", 1.0))
-        self.ed_wm.setText(str(getattr(rs, "watermark_text", "") or ""))
-        i = self.cb_wmpos.findData(getattr(rs, "watermark_pos", "bottom_left"))
-        self.cb_wmpos.setCurrentIndex(max(0, i))
-        self.sl_wmsize.setValue(getattr(rs, "watermark_size", 0.14))
-        self.btn_wm.setColor(str(getattr(rs, "watermark_color", "#ffffff")))
-        self.sl_wmalpha.setValue(getattr(rs, "watermark_alpha", 0.55))
-        self.chk_beat.setChecked(bool(getattr(rs, "beat_counter", False)))
-        i = self.cb_beatpos.findData(getattr(rs, "beat_counter_pos", "bottom_right"))
-        self.cb_beatpos.setCurrentIndex(max(0, i))
-        i = self.cb_beatmode.findData(getattr(rs, "beat_counter_mode", "notes"))
-        self.cb_beatmode.setCurrentIndex(max(0, i))
-        self.sl_beatsize.setValue(getattr(rs, "beat_counter_size", 0.14))
-        self.btn_beat.setColor(str(getattr(rs, "beat_counter_color", "#ffffff")))
-        self.sl_beatalpha.setValue(getattr(rs, "beat_counter_alpha", 0.92))
         self.sp_bar_w.setValue(int(rs.width))
         self.sp_bar_h.setValue(int(rs.height))
         self.sl_content.setValue(getattr(rs, "content_scale", 1.0))
@@ -852,24 +786,12 @@ class ChartPanel(QWidget):
         rs.vspread = self.sl_spread.value()
         rs.ticks = self.cb_ticks.currentData()
         rs.post_speed = self.sl_post.value()
-        rs.watermark_text = self.ed_wm.text()
-        rs.watermark_pos = self.cb_wmpos.currentData()
-        rs.watermark_size = self.sl_wmsize.value()
-        rs.watermark_color = self.btn_wm.color()
-        rs.watermark_alpha = self.sl_wmalpha.value()
-        rs.beat_counter = self.chk_beat.isChecked()
-        rs.beat_counter_pos = self.cb_beatpos.currentData()
-        rs.beat_counter_mode = self.cb_beatmode.currentData()
-        rs.beat_counter_size = self.sl_beatsize.value()
-        rs.beat_counter_color = self.btn_beat.color()
-        rs.beat_counter_alpha = self.sl_beatalpha.value()
         rs.content_scale = self.sl_content.value()
         self.doc.project.export.background = self.cb_bg.currentData()
         self.doc.project.export.bg_color = self.btn_bg.color()
         self.doc.touch("节奏条参数")
         self.changed.emit()
         self.renderChanged.emit()
-
 
 # -------------------------------------------------------------------- 外观
 class StylePanel(QWidget):
@@ -1362,14 +1284,11 @@ class StylePanel(QWidget):
         self.doc.touch("应用预设")
         self.changed.emit()
 
-
     def _sync_top_split(self) -> None:
         """勾了「分模式设置最高点」才允许单独调 A/B/C 的最高点。"""
         on = self.chk_db_topsplit.isChecked()
         for w in (self.sl_db_topa, self.sl_db_topb, self.sl_db_topc):
             w.setEnabled(on)
-
-
 
     # ------------------------------------------------------------ 判定区分段
     @staticmethod
@@ -1606,7 +1525,6 @@ class StylePanel(QWidget):
         gs.fade_s = self.sl_gfade.value()
         self.doc.touch("外观")
         self.changed.emit()
-
 
 # -------------------------------------------------------------------- 导出
 class ExportPanel(QWidget):
@@ -1849,7 +1767,6 @@ class ExportPanel(QWidget):
         self._hint()
         self.changed.emit()
 
-
 # -------------------------------------------------------------------- 设置
 class SettingsPanel(QWidget):
     """应用级设置（不改工程数据）。"""
@@ -1961,3 +1878,307 @@ class SettingsPanel(QWidget):
         s.check_updates = self.chk_updates.isChecked()
         s.save()
         self.changed.emit()
+
+
+# ------------------------------------------------------------ 文字与统计
+class StatsPanel(QWidget):
+    """水印、Beats 计数（含统计分段 / Phase / 位置）、可视化进度条。"""
+
+    changed = Signal()
+    renderChanged = Signal()
+
+    def __init__(self, doc: Doc, parent=None):
+        super().__init__(parent)
+        self.doc = doc
+        self._loading = False
+        self.time_provider = None
+        inner = QWidget()
+        root = QVBoxLayout(inner)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(8)
+        rs = self.doc.project.render
+
+        # ------------------------------------------------------------ 水印
+        box1 = QGroupBox("水印文字")
+        f1 = QFormLayout(box1)
+        self.ed_wm = QLineEdit()
+        self.ed_wm.setPlaceholderText("留空则不显示")
+        self.ed_wm.setToolTip("显示在角落的自由输入文字")
+        self.ed_wm.editingFinished.connect(self._apply)
+        self.cb_wmpos = QComboBox()
+        for label, key in (("左下", "bottom_left"), ("右下", "bottom_right"),
+                           ("左上", "top_left"), ("右上", "top_right")):
+            self.cb_wmpos.addItem(label, key)
+        self.cb_wmpos.currentIndexChanged.connect(self._apply)
+        self.sl_wmsize = FloatSlider(0.04, 0.60, 0.14, 0.01, 2)
+        self.sl_wmsize.setToolTip("字号，相对节奏条高度")
+        self.sl_wmsize.valueChanged.connect(self._apply)
+        self.btn_wm = ColorButton("#ffffff")
+        self.btn_wm.colorChanged.connect(self._apply)
+        self.sl_wmalpha = FloatSlider(0.0, 1.0, 0.55, 0.01, 2)
+        self.sl_wmalpha.valueChanged.connect(self._apply)
+        f1.addRow("内容", self.ed_wm)
+        f1.addRow("位置", self.cb_wmpos)
+        f1.addRow("字号/颜色", _row(self.sl_wmsize, self.btn_wm))
+        f1.addRow("透明度", self.sl_wmalpha)
+        root.addWidget(box1)
+
+        # ------------------------------------------------------- Beats 计数
+        box2 = QGroupBox("Beats 计数")
+        f2 = QFormLayout(box2)
+        self.chk_beat = QCheckBox("显示")
+        self.chk_beat.toggled.connect(self._apply)
+        self.chk_phase = QCheckBox("前面加 Phase 段落号")
+        self.chk_phase.setToolTip('开启后显示成 "Phase 2   BEAT 12"')
+        self.chk_phase.toggled.connect(self._apply)
+        self.cb_beatmode = QComboBox()
+        self.cb_beatmode.addItem("已命中音符数", "notes")
+        self.cb_beatmode.addItem("按 BPM 的拍号", "beats")
+        self.cb_beatmode.currentIndexChanged.connect(self._apply)
+        self.cb_beatdisplay = QComboBox()
+        self.cb_beatdisplay.addItem("仅显示总 Beats 数", "total")
+        self.cb_beatdisplay.addItem("仅显示当前段落的 Beats 数", "segment")
+        self.cb_beatdisplay.addItem("当前段 // 总（两者都显示）", "both")
+        self.cb_beatdisplay.setToolTip("只影响 Beats 数值；没分段时三种都一样")
+        self.cb_beatdisplay.currentIndexChanged.connect(self._apply)
+        self.sl_beatsize = FloatSlider(0.04, 0.60, 0.14, 0.01, 2)
+        self.sl_beatsize.setToolTip("字号，相对节奏条高度")
+        self.sl_beatsize.valueChanged.connect(self._apply)
+        self.btn_beat = ColorButton("#ffffff")
+        self.btn_beat.colorChanged.connect(self._apply)
+        self.sl_beatalpha = FloatSlider(0.0, 1.0, 0.92, 0.01, 2)
+        self.sl_beatalpha.valueChanged.connect(self._apply)
+        self.sl_bx = FloatSlider(0.0, 1.0, 0.94, 0.01, 2)
+        self.sl_bx.setToolTip("横向位置（0=最左，1=最右；文字以该点为锚）")
+        self.sl_bx.valueChanged.connect(self._apply)
+        self.sl_by = FloatSlider(0.0, 1.0, 0.90, 0.01, 2)
+        self.sl_by.setToolTip("纵向位置（0=最上，1=最下）")
+        self.sl_by.valueChanged.connect(self._apply)
+        f2.addRow("", _row(self.chk_beat, self.chk_phase))
+        f2.addRow("计数方式", self.cb_beatmode)
+        f2.addRow("分段时显示", self.cb_beatdisplay)
+        f2.addRow("字号/颜色", _row(self.sl_beatsize, self.btn_beat))
+        f2.addRow("透明度", self.sl_beatalpha)
+        f2.addRow("位置 X / Y", _row(self.sl_bx, self.sl_by))
+        root.addWidget(box2)
+
+        # ------------------------------------------------------- 统计分段
+        box3 = QGroupBox("Beats 统计分段")
+        v3 = QVBoxLayout(box3)
+        self.list_stat = QListWidget()
+        self.list_stat.setMaximumHeight(96)
+        v3.addWidget(self.list_stat)
+        self.sp_stat_time = QDoubleSpinBox()
+        self.sp_stat_time.setRange(0.0, 36_000_000.0)
+        self.sp_stat_time.setDecimals(1)
+        self.sp_stat_time.setSingleStep(100.0)
+        self.sp_stat_time.setSuffix(" ms")
+        self.b_stat_now = QPushButton("取播放头")
+        v3.addWidget(_row(self.sp_stat_time, self.b_stat_now))
+        rowb = QHBoxLayout()
+        self.b_stat_split = QPushButton("在此时刻切分")
+        self.b_stat_del = QPushButton("删除选中段")
+        rowb.addWidget(self.b_stat_split)
+        rowb.addWidget(self.b_stat_del)
+        v3.addLayout(rowb)
+        root.addWidget(box3)
+
+        # --------------------------------------------------------- 进度条
+        box4 = QGroupBox("可视化进度条")
+        f4 = QFormLayout(box4)
+        self.chk_prog = QCheckBox("显示进度条")
+        self.chk_prog.toggled.connect(self._apply)
+        self.sp_pw = QSpinBox()
+        self.sp_pw.setRange(20, 4000)
+        self.sp_pw.setSingleStep(10)
+        self.sp_pw.setSuffix(" px")
+        self.sp_pw.valueChanged.connect(self._apply)
+        self.sp_ph = QSpinBox()
+        self.sp_ph.setRange(4, 400)
+        self.sp_ph.setSingleStep(2)
+        self.sp_ph.setSuffix(" px")
+        self.sp_ph.valueChanged.connect(self._apply)
+        self.sl_px = FloatSlider(0.0, 1.0, 0.5, 0.01, 2)
+        self.sl_py = FloatSlider(0.0, 1.0, 0.88, 0.01, 2)
+        self.sl_px.valueChanged.connect(self._apply)
+        self.sl_py.valueChanged.connect(self._apply)
+        self.chk_round = QCheckBox("圆角")
+        self.chk_round.toggled.connect(self._apply)
+        self.sl_palpha = FloatSlider(0.0, 1.0, 0.85, 0.01, 2)
+        self.sl_palpha.valueChanged.connect(self._apply)
+        self.btn_pfill = ColorButton("#5ad1ff")
+        self.btn_pfill.colorChanged.connect(self._apply)
+        self.sl_pbw = FloatSlider(0.0, 0.40, 0.06, 0.01, 2)
+        self.sl_pbw.setToolTip("边框粗细，相对进度条高度")
+        self.sl_pbw.valueChanged.connect(self._apply)
+        self.btn_pborder = ColorButton("#ffffff")
+        self.btn_pborder.colorChanged.connect(self._apply)
+        self.sl_pba = FloatSlider(0.0, 1.0, 0.8, 0.01, 2)
+        self.sl_pba.valueChanged.connect(self._apply)
+        self.cb_pmode = QComboBox()
+        self.cb_pmode.addItem("时间 / 总时间", "time")
+        self.cb_pmode.addItem("Beats 数 / 总 Beats 数", "beats")
+        self.cb_pmode.addItem("当前段落经过时间 / 段落总时间", "seg_time")
+        self.cb_pmode.addItem("当前段落 Beats / 段落总 Beats", "seg_beats")
+        self.cb_pmode.currentIndexChanged.connect(self._apply)
+        f4.addRow("", self.chk_prog)
+        f4.addRow("宽 × 高", _row(self.sp_pw, self.sp_ph))
+        f4.addRow("位置 X / Y", _row(self.sl_px, self.sl_py))
+        f4.addRow("", self.chk_round)
+        f4.addRow("整体透明度", self.sl_palpha)
+        f4.addRow("填充颜色", self.btn_pfill)
+        f4.addRow("边框宽度", self.sl_pbw)
+        f4.addRow("边框颜色/透明度", _row(self.btn_pborder, self.sl_pba))
+        f4.addRow("进度依据", self.cb_pmode)
+        root.addWidget(box4)
+        root.addStretch(1)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(_scroll(inner))
+
+        self.b_stat_now.clicked.connect(self._take_playhead)
+        self.b_stat_split.clicked.connect(self.stat_split)
+        self.b_stat_del.clicked.connect(self.stat_delete)
+        self.refresh()
+
+    # ------------------------------------------------------------- 刷新
+    def refresh(self) -> None:
+        rs = self.doc.project.render
+        self._loading = True
+        self.ed_wm.setText(str(getattr(rs, "watermark_text", "") or ""))
+        i = self.cb_wmpos.findData(str(getattr(rs, "watermark_pos", "bottom_left")))
+        self.cb_wmpos.setCurrentIndex(max(0, i))
+        self.sl_wmsize.setValue(getattr(rs, "watermark_size", 0.14))
+        self.btn_wm.setColor(str(getattr(rs, "watermark_color", "#ffffff")))
+        self.sl_wmalpha.setValue(getattr(rs, "watermark_alpha", 0.55))
+
+        self.chk_beat.setChecked(bool(getattr(rs, "beat_counter", False)))
+        self.chk_phase.setChecked(bool(getattr(rs, "beat_counter_show_phase", False)))
+        i = self.cb_beatmode.findData(str(getattr(rs, "beat_counter_mode", "notes")))
+        self.cb_beatmode.setCurrentIndex(max(0, i))
+        i = self.cb_beatdisplay.findData(str(getattr(rs, "beat_counter_display", "total")))
+        self.cb_beatdisplay.setCurrentIndex(max(0, i))
+        self.sl_beatsize.setValue(getattr(rs, "beat_counter_size", 0.14))
+        self.btn_beat.setColor(str(getattr(rs, "beat_counter_color", "#ffffff")))
+        self.sl_beatalpha.setValue(getattr(rs, "beat_counter_alpha", 0.92))
+        self.sl_bx.setValue(getattr(rs, "beat_counter_x", 0.94))
+        self.sl_by.setValue(getattr(rs, "beat_counter_y", 0.90))
+
+        self.chk_prog.setChecked(bool(getattr(rs, "progress_bar", False)))
+        self.sp_pw.setValue(int(getattr(rs, "progress_w", 400.0)))
+        self.sp_ph.setValue(int(getattr(rs, "progress_h", 40.0)))
+        self.sl_px.setValue(getattr(rs, "progress_x", 0.5))
+        self.sl_py.setValue(getattr(rs, "progress_y", 0.88))
+        self.chk_round.setChecked(bool(getattr(rs, "progress_round", True)))
+        self.sl_palpha.setValue(getattr(rs, "progress_opacity", 0.85))
+        self.btn_pfill.setColor(str(getattr(rs, "progress_fill", "#5ad1ff")))
+        self.sl_pbw.setValue(getattr(rs, "progress_border_w", 0.06))
+        self.btn_pborder.setColor(str(getattr(rs, "progress_border_color", "#ffffff")))
+        self.sl_pba.setValue(getattr(rs, "progress_border_alpha", 0.8))
+        i = self.cb_pmode.findData(str(getattr(rs, "progress_mode", "beats")))
+        self.cb_pmode.setCurrentIndex(max(0, i))
+        self._refresh_segments()
+        self._loading = False
+
+    @staticmethod
+    def _fmt_ms(ms: float) -> str:
+        ms = max(0.0, float(ms))
+        return f"{int(ms // 60000):02d}:{(ms % 60000) / 1000:06.3f}"
+
+    def _segments(self) -> list:
+        return self.doc.project.render.stat_segments
+
+    def _refresh_segments(self) -> None:
+        segs = self._segments()
+        row = self.list_stat.currentRow()
+        self.list_stat.blockSignals(True)
+        self.list_stat.clear()
+        for idx, s in enumerate(segs):
+            end = "结尾" if float(s.end_ms) <= float(s.start_ms) else self._fmt_ms(s.end_ms)
+            self.list_stat.addItem(f"Phase {idx + 1}   {self._fmt_ms(s.start_ms)} → {end}")
+        self.list_stat.blockSignals(False)
+        if 0 <= row < len(segs):
+            self.list_stat.setCurrentRow(row)
+
+    def _take_playhead(self) -> None:
+        try:
+            t = float(self.time_provider()) if self.time_provider else 0.0
+        except Exception:
+            t = 0.0
+        self.sp_stat_time.setValue(max(0.0, t))
+
+    def stat_split(self) -> None:
+        from ..model import StatSegment
+
+        t = float(self.sp_stat_time.value())
+        segs = sorted(self._segments(), key=lambda s: float(s.start_ms))
+        if not segs:
+            segs = [StatSegment(0.0, t), StatSegment(t, 0.0)]
+        else:
+            hit = None
+            for s in segs:
+                st, en = float(s.start_ms), float(s.end_ms)
+                if t >= st and (en <= st or t < en):
+                    hit = s
+                    break
+            if hit is None:
+                segs.append(StatSegment(t, 0.0))
+            elif t > float(hit.start_ms) + 1.0:
+                old_end = float(hit.end_ms)
+                hit.end_ms = t
+                segs.append(StatSegment(t, old_end))
+        self.doc.project.render.stat_segments = sorted(segs, key=lambda s: float(s.start_ms))
+        self._refresh_segments()
+        self.doc.touch("Beats 统计分段")
+        self.changed.emit()
+        self.renderChanged.emit()
+
+    def stat_delete(self) -> None:
+        row = self.list_stat.currentRow()
+        segs = self._segments()
+        if not (0 <= row < len(segs)):
+            return
+        segs.pop(row)
+        self._refresh_segments()
+        self.doc.touch("删除 Beats 统计分段")
+        self.changed.emit()
+        self.renderChanged.emit()
+
+    # ------------------------------------------------------------- 写入
+    def _apply(self, *_) -> None:
+        if self._loading:
+            return
+        rs = self.doc.project.render
+        rs.watermark_text = self.ed_wm.text()
+        rs.watermark_pos = self.cb_wmpos.currentData()
+        rs.watermark_size = self.sl_wmsize.value()
+        rs.watermark_color = self.btn_wm.color()
+        rs.watermark_alpha = self.sl_wmalpha.value()
+
+        rs.beat_counter = self.chk_beat.isChecked()
+        rs.beat_counter_show_phase = self.chk_phase.isChecked()
+        rs.beat_counter_mode = self.cb_beatmode.currentData()
+        rs.beat_counter_display = self.cb_beatdisplay.currentData()
+        rs.beat_counter_size = self.sl_beatsize.value()
+        rs.beat_counter_color = self.btn_beat.color()
+        rs.beat_counter_alpha = self.sl_beatalpha.value()
+        rs.beat_counter_x = self.sl_bx.value()
+        rs.beat_counter_y = self.sl_by.value()
+
+        rs.progress_bar = self.chk_prog.isChecked()
+        rs.progress_w = float(self.sp_pw.value())
+        rs.progress_h = float(self.sp_ph.value())
+        rs.progress_x = self.sl_px.value()
+        rs.progress_y = self.sl_py.value()
+        rs.progress_round = self.chk_round.isChecked()
+        rs.progress_opacity = self.sl_palpha.value()
+        rs.progress_fill = self.btn_pfill.color()
+        rs.progress_border_w = self.sl_pbw.value()
+        rs.progress_border_color = self.btn_pborder.color()
+        rs.progress_border_alpha = self.sl_pba.value()
+        rs.progress_mode = self.cb_pmode.currentData()
+
+        self.doc.touch("文字与统计")
+        self.changed.emit()
+        self.renderChanged.emit()
