@@ -640,29 +640,26 @@ class BarRenderer:
 
     # --------------------------------------------- 命中脉冲包络（渐大 → 峰值 → 渐小）
     @staticmethod
-    def _impact_env(dt: float, total_ms: float, grow: float | None = None) -> float:
+    def _impact_env(dt: float, total_ms: float, ramp_ms: float | None = None) -> float:
         """命中脉冲：dt=0（命中那一帧）为峰值 1.0。
 
-        dt < 0 = 还在接近（渐大），dt > 0 = 已经命中（渐小）。
-        传入 grow（0~1）时，渐大改用「胶囊下落进程」而不是时间：
-        胶囊在最高点时 grow=0，落到最低点 grow=1 —— 所以峰值必定出现在最低点，
-        不会出现"降到一半就最大"或"到点才突然变大"。
+        渐大段长度 = ramp_ms（默认 total/2），由调用方夹到「不超过下落时长」，
+        所以膨胀时长确实决定"什么时候开始变大"，同时峰值仍稳稳落在最低点。
         """
         total = float(total_ms or 0.0)
         if total <= 0.0:
             return 0.0
-        half = total * 0.5
+        decay = total * 0.5
+        ramp = float(ramp_ms) if ramp_ms is not None else decay
+        ramp = max(1.0, ramp)
         if dt < 0.0:
-            if grow is None:
-                if dt <= -half:
-                    return 0.0
-                u = (dt + half) / half                  # 0 → 1 逐渐接近命中
-            else:
-                u = max(0.0, min(1.0, float(grow)))
+            if dt <= -ramp:
+                return 0.0
+            u = (dt + ramp) / ramp                      # 0 → 1 逐渐接近命中
             return u * u * (3.0 - 2.0 * u)              # smoothstep：渐大
-        if dt >= half:
+        if dt >= decay:
             return 0.0
-        u = dt / half
+        u = dt / decay
         return (1.0 - u) ** 1.6                         # 渐小
 
     # ------------------------------------------------------- 哑铃判定点（新样式）
@@ -828,13 +825,14 @@ class BarRenderer:
         return max(1.0, float(getattr(js, f"db_cap_pop_{kind}", base)))
 
     def _dumbbell_feedback(self, st: NoteStyle | None, dt: float, h: float,
-                           hit: bool, grow: float | None = None) -> tuple[float, float, float, float, float]:
+                           hit: bool, ramp: float | None = None,
+                           dense: float = 1.0) -> tuple[float, float, float, float, float]:
         """命中形变：(圆点膨胀, 整体缩放, x 偏移, y 偏移, 胶囊膨胀)。
 
         三者都用同一个"命中脉冲"包络：命中那一帧最大，之前渐大、之后渐小。
-        grow（0~1，胶囊下落进程）给了就用它决定渐大量，保证峰值正好在最低点。
+        ramp 控制渐大段长度（由膨胀时长决定，并被夹到不超过下落时长）。
+        dense（0~1）用来抑制密集节拍下抖动的叠加：间隔越短，抖动越弱。
         A：圆点膨胀；B：整体放大 + 颤抖；C：只有胶囊膨胀。
-        抖动只在命中之后（dt ≥ 0）出现。
         """
         js: JudgeStyle = self.th.judge
         if not hit:
@@ -842,7 +840,7 @@ class BarRenderer:
 
         kind = self._feedback_kind(st)
         # 胶囊膨胀：A/B/C 都有（倍率可分别设置，1.0 = 不膨胀）
-        cap_env = self._impact_env(dt, float(getattr(js, "db_cap_pop_ms", 280.0)), grow)
+        cap_env = self._impact_env(dt, float(getattr(js, "db_cap_pop_ms", 280.0)), ramp)
         cap_mult = self._cap_pop_mult(st)
         cap_pop = 1.0 + (cap_mult - 1.0) * cap_env
 
@@ -851,18 +849,19 @@ class BarRenderer:
             return 1.0, 1.0, 0.0, 0.0, cap_pop
 
         if kind == "A":
-            env = self._impact_env(dt, float(getattr(js, "db_pop_ms", 320.0)), grow)
+            env = self._impact_env(dt, float(getattr(js, "db_pop_ms", 320.0)), ramp)
             pop = 1.0 + (float(getattr(js, "db_pop_scale", 1.65)) - 1.0) * env
             return pop, 1.0, 0.0, 0.0, cap_pop
 
         total = float(getattr(js, "db_shake_ms", 320.0))
-        env = self._impact_env(dt, total, grow)
+        env = self._impact_env(dt, total, ramp)
         scale = 1.0 + (float(getattr(js, "db_shake_scale", 1.12)) - 1.0) * env
         amp = 0.0
         shake_dur = float(getattr(js, "db_shake_dur_ms", 600.0))
         if dt >= 0.0 and shake_dur > 0.0:
             u = min(1.0, dt / shake_dur)
-            amp = float(getattr(js, "db_shake_amp", 0.025)) * h * (1.0 - u) ** 1.5
+            amp = (float(getattr(js, "db_shake_amp", 0.025)) * h
+                   * (1.0 - u) ** 1.5 * max(0.0, min(1.0, dense)))
         ph = 2.0 * math.pi * float(getattr(js, "db_shake_hz", 30.0)) * dt / 1000.0
         return 1.0, scale, amp * math.sin(ph), amp * 0.55 * math.sin(ph * 1.7 + 0.9), cap_pop
 
@@ -899,17 +898,28 @@ class BarRenderer:
         outline = qc(outline_src, outline_alpha)
         outline_on = outline_w_scale > 0.001 and outline_alpha > 0.001
 
-        # 胶囊下落进程：最高点 0 → 最低点 1；用它驱动"渐大"，保证峰值正好在最低点
+        # 胶囊下落进程：最高点 0 → 最低点 1；用来把"渐大"夹到不超过下落时长
         half_n = max(0.01, float(getattr(js, "db_half_len", 0.31))
                      * max(0.2, float(getattr(js, "db_scale", 1.0))))
         top_n = 0.5 - self._top_mult(n) * half_n
         dip_n = 0.5 + self._dip_mult(n) * half_n
         yn = self._capsule_ynorm(t_ms)
-        grow = 0.0 if abs(dip_n - top_n) < 1e-6 else max(
-            0.0, min(1.0, (yn - top_n) / (dip_n - top_n)))
+
+        # 渐大段长度：由膨胀时长决定，但不超过这一拍的下落时长（不会从上升段就开始胀）
+        frac_n, prev_n, next_n, idle_n = self._judge_phase(t_ms)
+        period = (float(next_n.t) - float(prev_n.t)) if (prev_n and next_n) else 0.0
+        rise = max(0.05, min(0.95, float(getattr(js, "db_rise_frac", 0.71))))
+        fall_ms = (1.0 - rise) * period if period > 0 else 0.0
+        cap_total = float(getattr(js, "db_cap_pop_ms", 280.0))
+        ramp = cap_total * 0.5
+        if fall_ms > 0.0:
+            ramp = min(ramp, max(1.0, fall_ms))
+        # 密集节拍下抑制抖动叠加：一拍的时长越短，抖动越弱
+        shake_dur = max(1.0, float(getattr(js, "db_shake_dur_ms", 600.0)))
+        dense = max(0.15, min(1.0, period / shake_dur)) if period > 0 else 1.0
 
         pop_circle, scale, dx, dy, cap_pop = self._dumbbell_feedback(
-            st, dt, h, hit, grow=grow)
+            st, dt, h, hit, ramp=ramp, dense=dense)
         cy, y_top, y_bot, r_c, half_px = self._dumbbell_geometry(h)
         scale_geo = max(0.2, float(getattr(js, "db_scale", 1.0)))
         cw = max(2.0, float(getattr(js, "db_capsule_w", 0.26)) * h * scale_geo)

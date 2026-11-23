@@ -452,6 +452,7 @@ class MainWindow(QMainWindow):
         self.panel_chart.autoBpmRequested.connect(self.auto_bpm)
         self.panel_chart.clipSplitRequested.connect(self.split_selected_clip)
         self.panel_style.changed.connect(self.on_visual_changed)
+        self.panel_style.seekRequested.connect(self.seek)
         self.panel_export.changed.connect(self._on_export_changed)
         self.panel_export.exportRequested.connect(self.export_dialog)
         self.panel_export.stillRequested.connect(self.export_still_dialog)

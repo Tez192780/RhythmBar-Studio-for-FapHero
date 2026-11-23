@@ -147,7 +147,7 @@ _TABLE: dict[str, tuple[str, str]] = {
     "圆点常态大小": ("ドットの通常サイズ", "Dot size"),
     "C 微下沉": ("C わずかな沈み込み", "C slight dip"),
     "判定区分段（按时间）": ("判定点の区間（時間）", "Judge segments (time)"),
-    "在播放头切分": ("再生位置で分割", "Split at playhead"),
+    "在此时刻切分": ("この時刻で分割", "Split at this time"),
     "删除选中段": ("選択区間を削除", "Delete segment"),
     "当前外观 → 选中段": ("現在の外観 → 選択区間", "Current look → segment"),
     "选中段 → 面板": ("選択区間 → パネル", "Segment → panel"),

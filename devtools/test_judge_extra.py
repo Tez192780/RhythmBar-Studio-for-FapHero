@@ -54,24 +54,27 @@ def main() -> int:
     tm = p.chart.timemap
     st = p.theme.styles["cyan"]
 
-    # ------------------------------------------------ 1) 膨胀跟着下落进程
+    # ------------------------------------------- 1) 膨胀时长决定"何时开始变大"
     st.feedback = "A"
-    g0 = r._dumbbell_feedback(st, -60.0, H, True, grow=0.0)[4]
-    g5 = r._dumbbell_feedback(st, -60.0, H, True, grow=0.5)[4]
-    g1 = r._dumbbell_feedback(st, -60.0, H, True, grow=1.0)[4]
-    check("下落起点（grow=0）胶囊不膨胀", abs(g0 - 1.0) < 1e-9, f"{g0:.3f}")
-    check("落到最低点（grow=1）胶囊最大", abs(g1 - js.db_cap_pop) < 1e-9, f"{g1:.3f}")
-    check("膨胀随下落单调增大", g0 < g5 < g1, f"{g0:.3f} < {g5:.3f} < {g1:.3f}")
+    long_ramp = r._dumbbell_feedback(st, -120.0, H, True, ramp=140.0)[4]
+    short_ramp = r._dumbbell_feedback(st, -120.0, H, True, ramp=40.0)[4]
+    check("膨胀时长为长时段时，提前 120ms 已经在变大", long_ramp > 1.005 and long_ramp > short_ramp,
+          f"{long_ramp:.3f}")
+    check("膨胀时长很短时，同样提前 120ms 还没开始膨胀", abs(short_ramp - 1.0) < 1e-9,
+          f"{short_ramp:.3f}")
 
-    # 渲染层：胶囊到最低点时 grow 应该接近 1
+    peak = r._dumbbell_feedback(st, 0.0, H, True, ramp=140.0)[4]
+    after = r._dumbbell_feedback(st, 200.0, H, True, ramp=140.0)[4]
+    check("峰值仍在命中那一帧（= 胶囊最低点）", abs(peak - js.db_cap_pop) < 1e-9,
+          f"{peak:.3f}")
+    check("命中后回落到原尺寸", abs(after - 1.0) < 1e-9, f"{after:.3f}")
+
+    # 渲染时的渐大段确实不超过下落时长
     hit = tm.ms(10.0)
-    yn = r._capsule_ynorm(hit)
-    half = js.db_half_len * js.db_scale
-    top_n = 0.5 - r._top_mult(None) * half
-    dip_n = 0.5 + r._dip_mult(None) * half
-    grow_at_bottom = (yn - top_n) / (dip_n - top_n)
-    check("命中帧的胶囊确实在最低点（grow≈1）", abs(grow_at_bottom - 1.0) < 0.02,
-          f"{grow_at_bottom:.3f}")
+    frac, prev_n, next_n, _idle = r._judge_phase(hit)
+    period = float(next_n.t) - float(prev_n.t)
+    fall_ms = (1.0 - js.db_rise_frac) * period
+    check("下落时长不超过一拍", 0 < fall_ms < period, f"fall={fall_ms:.0f}ms")
 
     # ------------------------------------------------ 2) 抖动频率与时长
     def shakes(hz: float, dur_ms: float, steps: int = 60) -> list[float]:
@@ -102,6 +105,13 @@ def main() -> int:
     check("抖动随时间衰减", early > late > 0.0, f"{early:.2f} > {late:.2f}")
     check("抖动时长结束后为 0", after == 0.0, f"{after:.3f}")
     js.db_shake_dur_ms = 600.0
+    # 密集节拍：dense 会压低抖动幅度，避免叠加
+    st.feedback = "B"
+    loud = max(abs(r._dumbbell_feedback(st, 40.0 + k * 2, H, True, dense=1.0)[2])
+               for k in range(6))
+    quiet = max(abs(r._dumbbell_feedback(st, 40.0 + k * 2, H, True, dense=0.2)[2])
+                for k in range(6))
+    check("密集节拍下抖动幅度被压低", quiet < loud * 0.35, f"{quiet:.2f} vs {loud:.2f}")
     st.feedback = "auto"
 
     # ------------------------------------------------ 3) 描边可调

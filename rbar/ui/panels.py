@@ -874,6 +874,7 @@ class ChartPanel(QWidget):
 # -------------------------------------------------------------------- 外观
 class StylePanel(QWidget):
     changed = Signal()
+    seekRequested = Signal(float)
 
     def __init__(self, doc: Doc, parent=None):
         super().__init__(parent)
@@ -1150,9 +1151,21 @@ class StylePanel(QWidget):
         self.list_seg = QListWidget()
         self.list_seg.setMaximumHeight(110)
         v2d.addWidget(self.list_seg)
+        rowt = QHBoxLayout()
+        self.sp_segtime = QDoubleSpinBox()
+        self.sp_segtime.setRange(0.0, 36_000_000.0)
+        self.sp_segtime.setDecimals(1)
+        self.sp_segtime.setSingleStep(100.0)
+        self.sp_segtime.setSuffix(" ms")
+        self.sp_segtime.setToolTip("切分点的目标时间；可以直接输入或点「取播放头」")
+        self.b_seg_now = QPushButton("取播放头")
+        self.b_seg_jump = QPushButton("跳到选中段起点")
+        rowt.addWidget(self.sp_segtime, 1)
+        rowt.addWidget(self.b_seg_now)
+        v2d.addLayout(rowt)
         rowb = QHBoxLayout()
-        self.b_seg_split = QPushButton("在播放头切分")
-        self.b_seg_split.setToolTip("以当前播放位置为界，把所在的段一分为二（两段先都沿用同一套配置）")
+        self.b_seg_split = QPushButton("在此时刻切分")
+        self.b_seg_split.setToolTip("以左边输入的时间为界，把所在的段一分为二（两段先沿用同一套配置）")
         self.b_seg_del = QPushButton("删除选中段")
         rowb.addWidget(self.b_seg_split)
         rowb.addWidget(self.b_seg_del)
@@ -1164,6 +1177,7 @@ class StylePanel(QWidget):
         self.b_seg_load.setToolTip("把选中段落的参数载入面板，方便继续编辑")
         rowb2.addWidget(self.b_seg_save)
         rowb2.addWidget(self.b_seg_load)
+        rowb2.addWidget(self.b_seg_jump)
         v2d.addLayout(rowb2)
         rowf = QHBoxLayout()
         self.chk_fade = QCheckBox("段落间淡入淡出")
@@ -1184,6 +1198,10 @@ class StylePanel(QWidget):
         rowio.addWidget(self.b_seg_imp)
         v2d.addLayout(rowio)
         root.addWidget(box2d)
+        # 把「判定区分段」提到表单最上面：选段/找时间不用滚到底
+        root.removeWidget(box2d)
+        root.insertWidget(1, box2d)
+        self.box_seg = box2d
 
         gs = self.doc.project.theme.ghost
         box3 = QGroupBox("命中后残影（判定点左侧那串灰块）")
@@ -1226,6 +1244,8 @@ class StylePanel(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         self.time_provider = None          # 由主窗口注入：返回当前播放位置(ms)
         self.b_seg_split.clicked.connect(self.seg_split)
+        self.b_seg_now.clicked.connect(self.seg_take_playhead)
+        self.b_seg_jump.clicked.connect(self.seg_seek_start)
         self.b_seg_del.clicked.connect(self.seg_delete)
         self.b_seg_save.clicked.connect(self.seg_capture)
         self.b_seg_load.clicked.connect(self.seg_to_panel)
@@ -1376,8 +1396,17 @@ class StylePanel(QWidget):
         except Exception:
             return 0.0
 
+    def seg_take_playhead(self) -> None:
+        self.sp_segtime.setValue(max(0.0, self._seg_time()))
+
+    def seg_seek_start(self) -> None:
+        row = self.list_seg.currentRow()
+        segs = self.doc.project.theme.segments
+        if 0 <= row < len(segs):
+            self.seekRequested.emit(float(segs[row].start_ms))
+
     def seg_split(self) -> None:
-        t = self._seg_time()
+        t = float(self.sp_segtime.value())
         th = self.doc.project.theme
         segs = sorted(th.segments, key=lambda s: float(s.start_ms))
         if not segs:
