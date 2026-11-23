@@ -202,12 +202,31 @@ def main() -> int:
           f"{r._capsule_ynorm(hit_t):.3f} vs {dip_c_n:.3f}")
     check("C：比 A 浅、比 A 高（落在中轴与浅下沉之间）",
           dip_c_n < dip_a_n, f"C={dip_c_n:.2f} A={dip_a_n:.2f}")
-    for dt in (0.0, js.db_pop_ms / 2, js.db_shake_ms / 2):
-        pop, sc, dx, dy, cap = r._dumbbell_feedback(st, dt, H, True)
-        check(f"C：dt={dt:.0f}ms 时没有任何命中特效",
-              abs(pop - 1.0) < 1e-9 and abs(sc - 1.0) < 1e-9
-              and abs(dx) < 1e-9 and abs(dy) < 1e-9 and abs(cap - 1.0) < 1e-9,
-              f"pop={pop:.2f} scale={sc:.2f} dx={dx:.2f} cap={cap:.2f}")
+    cap_c = r._dumbbell_feedback(st, 0.0, H, True)[4]
+    check("C：现在也有胶囊膨胀", cap_c > 1.0, f"cap={cap_c:.3f}")
+    for dt in (0.0, js.db_pop_ms / 4, js.db_shake_ms / 4):
+        pop, sc, dx, dy, _cap = r._dumbbell_feedback(st, dt, H, True)
+        check(f"C：dt={dt:.0f}ms 时没有圆点膨胀/放大/抖动",
+              abs(pop - 1.0) < 1e-9 and abs(sc - 1.0) < 1e-9 and abs(dx) < 1e-9 and abs(dy) < 1e-9,
+              f"pop={pop:.2f} scale={sc:.2f} dx={dx:.2f}")
+
+    # ------------------------------------------ 分模式胶囊膨胀倍率（含 1.0 = 不膨胀）
+    js.db_cap_pop_split = True
+    js.db_cap_pop_a = 2.0
+    js.db_cap_pop_b = 1.0
+    js.db_cap_pop_c = 1.4
+    st.feedback = "A"
+    ca = r._dumbbell_feedback(st, 0.0, H, True)[4]
+    st.feedback = "B"
+    cb = r._dumbbell_feedback(st, 0.0, H, True)[4]
+    st.feedback = "C"
+    cc = r._dumbbell_feedback(st, 0.0, H, True)[4]
+    check("分模式膨胀：A 用 2.0 倍", abs(ca - 2.0) < 1e-9, f"{ca:.3f}")
+    check("分模式膨胀：B 设为 1.0 表示不膨胀", abs(cb - 1.0) < 1e-9, f"{cb:.3f}")
+    check("分模式膨胀：C 用 1.4 倍", abs(cc - 1.4) < 1e-9, f"{cc:.3f}")
+    js.db_cap_pop_split = False
+    js.db_cap_pop_a = js.db_cap_pop_b = js.db_cap_pop_c = 1.16
+    st.feedback = "auto"
 
     # ---------------------------------------------------- 分模式最高点
     def tops_at_peak() -> float:
@@ -232,6 +251,38 @@ def main() -> int:
     js.db_top_b = 0.85
     for style in p.theme.styles.values():
         style.feedback = "auto"
+
+    # ---------------------------------------------------- 运输缓动
+    def rise_curve(mode: str, strength: float, n: int = 10) -> list[float]:
+        """只取「上升段」内的采样（否则会跨到下一拍，步长自然不等）。"""
+        js.db_ease_mode = mode
+        js.db_ease_strength = strength
+        return [r._capsule_ynorm(tm.ms(10.0 + js.db_rise_frac * k / n))
+                for k in range(n + 1)]
+
+    lin = rise_curve("none", 1.0)
+    steps = [abs(lin[i + 1] - lin[i]) for i in range(len(lin) - 1)]
+    check("匀速模式：相邻步长几乎相等",
+          max(steps) - min(steps) < 0.02, f"{[round(v, 2) for v in steps[:5]]}")
+
+    top_only = rise_curve("top", 1.0)
+    near_top = abs(top_only[-1] - top_only[-2])
+    near_bottom = abs(top_only[1] - top_only[0])
+    check("仅最高点缓动：靠顶部比靠底部更慢", near_top < near_bottom,
+          f"顶部步长 {near_top:.3f} < 底部步长 {near_bottom:.3f}")
+
+    both = rise_curve("both", 1.0)
+    mid_step = abs(both[5] - both[4])
+    check("两端都缓动：中间比两端快",
+          mid_step > abs(both[1] - both[0]) and mid_step > abs(both[-1] - both[-2]),
+          f"中 {mid_step:.3f} vs 起 {abs(both[1]-both[0]):.3f} / 止 {abs(both[-1]-both[-2]):.3f}")
+
+    soft = rise_curve("both", 0.0)
+    check("强度 0 时等同于匀速",
+          max(abs(soft[i] - lin[i]) for i in range(len(soft))) < 1e-6)
+
+    js.db_ease_mode = "both"
+    js.db_ease_strength = 0.7
 
     # 哑铃颜色可调
     st.feedback = "auto"

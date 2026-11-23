@@ -119,8 +119,14 @@ class JudgeStyle:
     db_fall_ease: float = 0.85    # 下落段缓动指数（<1 = 前段更快）
     db_pop_scale: float = 1.65    # A：命中瞬间圆点膨胀倍率
     db_pop_ms: float = 320.0      # A：圆点膨胀的整段时长（一半渐大 + 一半渐小）
-    db_cap_pop: float = 1.16      # 命中瞬间胶囊自身的膨胀倍率（A/B）
+    db_cap_pop: float = 1.16      # 命中瞬间胶囊自身的膨胀倍率（A/B/C 通用，1.0 = 不膨胀）
+    db_cap_pop_split: bool = False  # 是否给 A/B/C 分别设置胶囊膨胀倍率
+    db_cap_pop_a: float = 1.16    # A 的胶囊膨胀倍率（1.0 = 不膨胀）
+    db_cap_pop_b: float = 1.16    # B 的胶囊膨胀倍率
+    db_cap_pop_c: float = 1.16    # C 的胶囊膨胀倍率
     db_cap_pop_ms: float = 280.0  # 胶囊膨胀的整段时长（一半渐大 + 一半渐小）
+    db_ease_mode: str = "both"    # none = 匀速 | top = 仅最高点缓动 | both = 最高点+最低点都缓动
+    db_ease_strength: float = 0.7  # 缓入缓出的强度 0~1
     db_shake_scale: float = 1.12  # B：命中瞬间整体放大倍率
     db_shake_amp: float = 0.025   # B：抖动幅度（相对条高）
     db_shake_hz: float = 30.0     # B：抖动频率（Hz）

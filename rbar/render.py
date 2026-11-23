@@ -656,18 +656,50 @@ class BarRenderer:
                     return rest + (dip(next_note) - rest) * (u * u * (3.0 - 2.0 * u))
             return rest
 
+        mode = str(getattr(js, "db_ease_mode", "both") or "both").lower()
+        strength = max(0.0, min(1.0, float(getattr(js, "db_ease_strength", 0.7))))
+        slow_top = mode in ("top", "both")          # 最高点缓入缓出
+        slow_bottom = mode == "both"                # 最低点（命中处）也缓入缓出
+
         rise = max(0.05, min(0.95, float(getattr(js, "db_rise_frac", 0.71))))
         if frac < rise:
             top = top_of(prev_note)                           # 上升段用这一颗对应的最高点
             d = dip(prev_note)                                # 刚从最低点往上走
             u = frac / rise
-            k = u * u * (3.0 - 2.0 * u)                       # smoothstep
+            k = self._ease(u, at_start=slow_bottom, at_end=slow_top, strength=strength)
             return d + (top - d) * k
         top = top_of(next_note)                               # 下落段用下一颗对应的最高点
         d = dip(next_note)                                    # 正在砸向下一颗
         u = (frac - rise) / (1.0 - rise)
-        k = u ** max(0.2, float(getattr(js, "db_fall_ease", 0.85)))
+        k = self._ease(u, at_start=slow_top, at_end=slow_bottom, strength=strength)
         return top + (d - top) * k
+
+    @staticmethod
+    def _ease(u: float, *, at_start: bool, at_end: bool, strength: float) -> float:
+        """把 0→1 的进度 u 做缓动整形；at_start/at_end 表示该端点处速度为 0。
+
+        strength 是"往缓动方向混合多少"：0 = 完全线性（匀速），1 = 完全缓动。
+        """
+        u = max(0.0, min(1.0, float(u)))
+        k = max(0.0, min(1.0, float(strength)))
+        if at_start and at_end:
+            shaped = u * u * (3.0 - 2.0 * u)          # smoothstep：两端都停一下
+        elif at_end:
+            shaped = 1.0 - (1.0 - u) ** 2.2           # ease-out：快到终点时减速
+        elif at_start:
+            shaped = u ** 2.2                         # ease-in：起步时加速
+        else:
+            shaped = u
+        return u + (shaped - u) * k
+
+    def _cap_pop_mult(self, st: NoteStyle | None) -> float:
+        """胶囊膨胀倍率：默认统一值；开启「分模式」后按该音符的 A/B/C 取各自的值。"""
+        js: JudgeStyle = self.th.judge
+        base = max(1.0, float(getattr(js, "db_cap_pop", 1.16)))
+        if not bool(getattr(js, "db_cap_pop_split", False)) or st is None:
+            return base
+        kind = self._feedback_kind(st).lower()
+        return max(1.0, float(getattr(js, f"db_cap_pop_{kind}", base)))
 
     def _dumbbell_feedback(self, st: NoteStyle | None, dt: float, h: float,
                            hit: bool) -> tuple[float, float, float, float, float]:
@@ -683,13 +715,14 @@ class BarRenderer:
             return 1.0, 1.0, 0.0, 0.0, 1.0
 
         kind = self._feedback_kind(st)
-        if kind == "C":
-            # 微下沉：不加任何命中特效
-            return 1.0, 1.0, 0.0, 0.0, 1.0
-
-        # 胶囊膨胀：A/B 通用
+        # 胶囊膨胀：A/B/C 都有（倍率可分别设置，1.0 = 不膨胀）
         cap_env = self._impact_env(dt, float(getattr(js, "db_cap_pop_ms", 280.0)))
-        cap_pop = 1.0 + (float(getattr(js, "db_cap_pop", 1.16)) - 1.0) * cap_env
+        cap_mult = self._cap_pop_mult(st)
+        cap_pop = 1.0 + (cap_mult - 1.0) * cap_env
+
+        if kind == "C":
+            # 微下沉：只保留胶囊膨胀，不膨胀圆点、不整体放大、也不抖
+            return 1.0, 1.0, 0.0, 0.0, cap_pop
 
         if kind == "A":
             env = self._impact_env(dt, float(getattr(js, "db_pop_ms", 320.0)))

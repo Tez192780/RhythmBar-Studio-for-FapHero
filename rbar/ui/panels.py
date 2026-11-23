@@ -1043,13 +1043,28 @@ class StylePanel(QWidget):
         self.sl_db_shakems.setToolTip("B：整体放大的整段时长（命中前一半渐大、命中后一半渐小）")
         self.sl_db_tintramp = FloatSlider(0.00, 0.60, getattr(js, "db_tint_ramp_ms", 140.0) / 1000.0, 0.01, 2, " s")
         self.sl_db_tintramp.setToolTip("命中前多久开始向该 Beat 的颜色渐变")
+        self.chk_db_capsplit = QCheckBox("分模式设置胶囊膨胀")
+        self.chk_db_capsplit.toggled.connect(self._apply)
+        self.sl_db_capa = FloatSlider(1.00, 2.00, getattr(js, "db_cap_pop_a", 1.16), 0.01, 2, "×")
+        self.sl_db_capb = FloatSlider(1.00, 2.00, getattr(js, "db_cap_pop_b", 1.16), 0.01, 2, "×")
+        self.sl_db_capc = FloatSlider(1.00, 2.00, getattr(js, "db_cap_pop_c", 1.16), 0.01, 2, "×")
+        self.chk_db_capsplit.toggled.connect(self._sync_cap_split)
+        self.cb_db_ease = QComboBox()
+        self.cb_db_ease.addItem("不缓入缓出（匀速）", "none")
+        self.cb_db_ease.addItem("仅最高点缓入缓出", "top")
+        self.cb_db_ease.addItem("最高点+最低点都缓动", "both")
+        self.cb_db_ease.setToolTip("胶囊在两端的速度曲线；最低点就是命中点")
+        self.cb_db_ease.currentIndexChanged.connect(self._apply)
+        self.sl_db_easestr = FloatSlider(0.0, 1.0, getattr(js, "db_ease_strength", 0.7), 0.01, 2)
+        self.sl_db_easestr.setToolTip("缓入缓出的强度：0 = 等同于匀速，1 = 最明显的减速")
         for w in (self.sl_db_circle, self.sl_db_len, self.sl_db_gscale, self.sl_db_dipa,
                   self.sl_db_dipb, self.sl_db_dipc, self.sl_db_capw, self.sl_db_caph,
                   self.sl_db_cappop, self.sl_db_pop, self.sl_db_scale, self.sl_db_shake,
                   self.sl_db_rise, self.sl_db_gap, self.sl_db_glide,
                   self.sl_db_cappopms, self.sl_db_top, self.sl_db_topa,
                   self.sl_db_topb, self.sl_db_topc, self.sl_db_popms,
-                  self.sl_db_shakems, self.sl_db_tintramp):
+                  self.sl_db_shakems, self.sl_db_tintramp, self.sl_db_capa,
+                  self.sl_db_capb, self.sl_db_capc, self.sl_db_easestr):
             w.valueChanged.connect(self._apply)
         f2b.addRow("哑铃长度", self.sl_db_len)
         f2b.addRow("哑铃整体大小", self.sl_db_gscale)
@@ -1072,6 +1087,11 @@ class StylePanel(QWidget):
         f2b.addRow("圆点膨胀时长", self.sl_db_popms)
         f2b.addRow("整体放大时长", self.sl_db_shakems)
         f2b.addRow("变色渐入", self.sl_db_tintramp)
+        f2b.addRow("", self.chk_db_capsplit)
+        f2b.addRow("A/B/C 胶囊膨胀", _row(self.sl_db_capa, self.sl_db_capb))
+        f2b.addRow("", self.sl_db_capc)
+        f2b.addRow("运动缓动", self.cb_db_ease)
+        f2b.addRow("缓动强度", self.sl_db_easestr)
         root.addWidget(box2b)
 
         gs = self.doc.project.theme.ghost
@@ -1159,6 +1179,14 @@ class StylePanel(QWidget):
         self.sl_db_popms.setValue(getattr(js, "db_pop_ms", 320.0) / 1000.0)
         self.sl_db_shakems.setValue(getattr(js, "db_shake_ms", 320.0) / 1000.0)
         self.sl_db_tintramp.setValue(getattr(js, "db_tint_ramp_ms", 140.0) / 1000.0)
+        self.chk_db_capsplit.setChecked(bool(getattr(js, "db_cap_pop_split", False)))
+        self.sl_db_capa.setValue(getattr(js, "db_cap_pop_a", 1.16))
+        self.sl_db_capb.setValue(getattr(js, "db_cap_pop_b", 1.16))
+        self.sl_db_capc.setValue(getattr(js, "db_cap_pop_c", 1.16))
+        i = self.cb_db_ease.findData(str(getattr(js, "db_ease_mode", "both")))
+        self.cb_db_ease.setCurrentIndex(max(0, i))
+        self.sl_db_easestr.setValue(getattr(js, "db_ease_strength", 0.7))
+        self._sync_cap_split()
         self._sync_top_split()
         i = self.cb_judge_shape.findData(js.shape)
         self.cb_judge_shape.setCurrentIndex(max(0, i))
@@ -1198,6 +1226,13 @@ class StylePanel(QWidget):
         """勾了「分模式设置最高点」才允许单独调 A/B/C 的最高点。"""
         on = self.chk_db_topsplit.isChecked()
         for w in (self.sl_db_topa, self.sl_db_topb, self.sl_db_topc):
+            w.setEnabled(on)
+
+
+    def _sync_cap_split(self) -> None:
+        """勾了「分模式设置胶囊膨胀」才允许单独调 A/B/C 的膨胀倍率。"""
+        on = self.chk_db_capsplit.isChecked()
+        for w in (self.sl_db_capa, self.sl_db_capb, self.sl_db_capc):
             w.setEnabled(on)
 
     def _pick_judge_image(self) -> None:
@@ -1258,6 +1293,12 @@ class StylePanel(QWidget):
         js.db_pop_ms = self.sl_db_popms.value() * 1000.0
         js.db_shake_ms = self.sl_db_shakems.value() * 1000.0
         js.db_tint_ramp_ms = self.sl_db_tintramp.value() * 1000.0
+        js.db_cap_pop_split = self.chk_db_capsplit.isChecked()
+        js.db_cap_pop_a = self.sl_db_capa.value()
+        js.db_cap_pop_b = self.sl_db_capb.value()
+        js.db_cap_pop_c = self.sl_db_capc.value()
+        js.db_ease_mode = self.cb_db_ease.currentData()
+        js.db_ease_strength = self.sl_db_easestr.value()
         js.shape = self.cb_judge_shape.currentData()
         js.idle_color = self.btn_idle.color()
         js.idle_scale = self.sl_idle_scale.value()
