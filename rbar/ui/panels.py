@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import os
 
 from PySide6.QtCore import QSize, Qt, Signal
@@ -37,8 +38,12 @@ from ..doc import Doc
 from ..exporter import estimate_size_mb
 from ..i18n import tr, trf
 from ..model import FORMATS, BpmSegment
-from ..theme import PRESETS, SHAPE_LABELS, SHAPES, NoteStyle, apply_preset
+from .. import segments as segments_io
+from ..theme import (PRESETS, SHAPE_LABELS, SHAPES, FadeSettings, JudgeSegment,
+                     NoteStyle, apply_preset)
 from .dialogs import choose_skin_image
+
+from PySide6.QtWidgets import QMessageBox  # noqa: E402
 
 
 # --------------------------------------------------------------------- 基础控件
@@ -1140,6 +1145,46 @@ class StylePanel(QWidget):
         f2c.addRow("描边颜色", self.btn_axoc)
         root.addWidget(box2c)
 
+        box2d = QGroupBox("判定区分段（按时间）")
+        v2d = QVBoxLayout(box2d)
+        self.list_seg = QListWidget()
+        self.list_seg.setMaximumHeight(110)
+        v2d.addWidget(self.list_seg)
+        rowb = QHBoxLayout()
+        self.b_seg_split = QPushButton("在播放头切分")
+        self.b_seg_split.setToolTip("以当前播放位置为界，把所在的段一分为二（两段先都沿用同一套配置）")
+        self.b_seg_del = QPushButton("删除选中段")
+        rowb.addWidget(self.b_seg_split)
+        rowb.addWidget(self.b_seg_del)
+        v2d.addLayout(rowb)
+        rowb2 = QHBoxLayout()
+        self.b_seg_save = QPushButton("当前外观 → 选中段")
+        self.b_seg_load = QPushButton("选中段 → 面板")
+        self.b_seg_save.setToolTip("把下面这些判定区参数复制进选中的段落")
+        self.b_seg_load.setToolTip("把选中段落的参数载入面板，方便继续编辑")
+        rowb2.addWidget(self.b_seg_save)
+        rowb2.addWidget(self.b_seg_load)
+        v2d.addLayout(rowb2)
+        rowf = QHBoxLayout()
+        self.chk_fade = QCheckBox("段落间淡入淡出")
+        self.sl_fadems = FloatSlider(0.10, 3.00, 0.40, 0.05, 2, " s")
+        self.sl_fadems.setToolTip("整段过渡时长（边界前后各一半）")
+        rowf.addWidget(self.chk_fade)
+        rowf.addWidget(self.sl_fadems, 1)
+        v2d.addLayout(rowf)
+        self.cb_fadescope = QComboBox()
+        self.cb_fadescope.addItem("淡入淡出作用：仅判定区", "judge")
+        self.cb_fadescope.addItem("淡入淡出作用：判定区 + 横向轴线", "judge_axes")
+        self.cb_fadescope.addItem("淡入淡出作用：判定区 + 轴线 + 音符", "all")
+        v2d.addWidget(self.cb_fadescope)
+        rowio = QHBoxLayout()
+        self.b_seg_exp = QPushButton("导出分段配置…")
+        self.b_seg_imp = QPushButton("读取分段配置…")
+        rowio.addWidget(self.b_seg_exp)
+        rowio.addWidget(self.b_seg_imp)
+        v2d.addLayout(rowio)
+        root.addWidget(box2d)
+
         gs = self.doc.project.theme.ghost
         box3 = QGroupBox("命中后残影（判定点左侧那串灰块）")
         f3 = QFormLayout(box3)
@@ -1179,6 +1224,16 @@ class StylePanel(QWidget):
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
+        self.time_provider = None          # 由主窗口注入：返回当前播放位置(ms)
+        self.b_seg_split.clicked.connect(self.seg_split)
+        self.b_seg_del.clicked.connect(self.seg_delete)
+        self.b_seg_save.clicked.connect(self.seg_capture)
+        self.b_seg_load.clicked.connect(self.seg_to_panel)
+        self.b_seg_exp.clicked.connect(self.seg_export)
+        self.b_seg_imp.clicked.connect(self.seg_import)
+        self.chk_fade.toggled.connect(self._apply)
+        self.sl_fadems.valueChanged.connect(self._apply)
+        self.cb_fadescope.currentIndexChanged.connect(self._apply)
         lay.addWidget(_scroll(inner))
         self.refresh()
 
@@ -1245,6 +1300,13 @@ class StylePanel(QWidget):
         self.sl_axow.setValue(getattr(self.doc.project.theme.axis, "outline_w", 0.0))
         self.sl_axoa.setValue(getattr(self.doc.project.theme.axis, "outline_alpha", 0.6))
         self.btn_axoc.setColor(str(getattr(self.doc.project.theme.axis, "outline_color", "#141a20")))
+        th = self.doc.project.theme
+        fd = th.fade
+        self.chk_fade.setChecked(bool(getattr(fd, "enabled", True)))
+        self.sl_fadems.setValue(float(getattr(fd, "ms", 400.0)) / 1000.0)
+        i = self.cb_fadescope.findData(str(getattr(fd, "scope", "judge")))
+        self.cb_fadescope.setCurrentIndex(max(0, i))
+        self._refresh_segments()
         self._sync_cap_split()
         self._sync_top_split()
         i = self.cb_judge_shape.findData(js.shape)
@@ -1287,6 +1349,120 @@ class StylePanel(QWidget):
         for w in (self.sl_db_topa, self.sl_db_topb, self.sl_db_topc):
             w.setEnabled(on)
 
+
+
+    # ------------------------------------------------------------ 判定区分段
+    @staticmethod
+    def _fmt_ms(ms: float) -> str:
+        ms = max(0.0, float(ms))
+        return f"{int(ms // 60000):02d}:{(ms % 60000) / 1000:06.3f}"
+
+    def _refresh_segments(self) -> None:
+        segs = self.doc.project.theme.segments
+        row = self.list_seg.currentRow()
+        self.list_seg.blockSignals(True)
+        self.list_seg.clear()
+        for s in segs:
+            end = "结尾" if float(s.end_ms) <= float(s.start_ms) else self._fmt_ms(s.end_ms)
+            mode = "哑铃" if str(getattr(s.style, "mode", "diamond")) == "dumbbell" else "菱形"
+            self.list_seg.addItem(f"{self._fmt_ms(s.start_ms)} → {end}    [{mode}]")
+        self.list_seg.blockSignals(False)
+        if 0 <= row < len(segs):
+            self.list_seg.setCurrentRow(row)
+
+    def _seg_time(self) -> float:
+        try:
+            return float(self.time_provider()) if self.time_provider else 0.0
+        except Exception:
+            return 0.0
+
+    def seg_split(self) -> None:
+        t = self._seg_time()
+        th = self.doc.project.theme
+        segs = sorted(th.segments, key=lambda s: float(s.start_ms))
+        if not segs:
+            segs = [JudgeSegment(0.0, t, copy.deepcopy(th.judge)),
+                    JudgeSegment(t, 0.0, copy.deepcopy(th.judge))]
+        else:
+            hit = None
+            for s in segs:
+                st, en = float(s.start_ms), float(s.end_ms)
+                if t >= st and (en <= st or t < en):
+                    hit = s
+                    break
+            if hit is None:
+                segs.append(JudgeSegment(t, 0.0, copy.deepcopy(th.judge)))
+            elif t > float(hit.start_ms) + 1.0:
+                old_end = float(hit.end_ms)
+                hit.end_ms = t
+                segs.append(JudgeSegment(t, old_end, copy.deepcopy(hit.style)))
+        if len(segs) > 1 and abs(float(segs[-1].start_ms)) < 1e-6:
+            pass
+        th.segments = sorted(segs, key=lambda s: float(s.start_ms))
+        self._refresh_segments()
+        self.doc.touch("判定区分段")
+        self.changed.emit()
+
+    def seg_delete(self) -> None:
+        row = self.list_seg.currentRow()
+        segs = self.doc.project.theme.segments
+        if not (0 <= row < len(segs)):
+            return
+        segs.pop(row)
+        self._refresh_segments()
+        self.doc.touch("删除判定区分段")
+        self.changed.emit()
+
+    def seg_capture(self) -> None:
+        row = self.list_seg.currentRow()
+        segs = self.doc.project.theme.segments
+        if not (0 <= row < len(segs)):
+            QMessageBox.information(self, tr("先选一段"), tr("请先在列表里选中要写入的段落。"))
+            return
+        segs[row].style = copy.deepcopy(self.doc.project.theme.judge)
+        self._refresh_segments()
+        self.doc.touch("写入判定区分段")
+        self.changed.emit()
+
+    def seg_to_panel(self) -> None:
+        row = self.list_seg.currentRow()
+        segs = self.doc.project.theme.segments
+        if not (0 <= row < len(segs)):
+            return
+        self.doc.project.theme.judge = copy.deepcopy(segs[row].style)
+        self.refresh()
+        self.changed.emit()
+
+    def seg_export(self) -> None:
+        base = os.path.dirname(self.doc.project.path) if self.doc.project.path else os.getcwd()
+        path, _ = QFileDialog.getSaveFileName(
+            self, tr("导出分段配置"), os.path.join(base, "judge_segments.json"),
+            "JSON (*.json)")
+        if not path:
+            return
+        try:
+            saved = segments_io.save(self.doc.project.theme, path)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, tr("导出失败"), str(e))
+            return
+        self.statusTip()
+        QMessageBox.information(self, tr("已导出"), saved)
+
+    def seg_import(self) -> None:
+        base = os.path.dirname(self.doc.project.path) if self.doc.project.path else os.getcwd()
+        path, _ = QFileDialog.getOpenFileName(
+            self, tr("读取分段配置"), base, "JSON (*.json)")
+        if not path:
+            return
+        try:
+            n = segments_io.load(self.doc.project.theme, path)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, tr("读取失败"), str(e))
+            return
+        self.refresh()
+        self.doc.touch("读取判定区分段")
+        self.changed.emit()
+        QMessageBox.information(self, tr("已读取"), trf("读入 {n} 个判定区分段", n=n))
 
     def _sync_cap_split(self) -> None:
         """勾了「分模式设置胶囊膨胀」才允许单独调 A/B/C 的膨胀倍率。"""
@@ -1372,6 +1548,14 @@ class StylePanel(QWidget):
         ax.outline_w = self.sl_axow.value()
         ax.outline_alpha = self.sl_axoa.value()
         ax.outline_color = self.btn_axoc.color()
+        fd = self.doc.project.theme.fade
+        fd.enabled = self.chk_fade.isChecked()
+        fd.ms = self.sl_fadems.value() * 1000.0
+        fd.scope = self.cb_fadescope.currentData()
+        row = self.list_seg.currentRow()
+        segs = self.doc.project.theme.segments
+        if 0 <= row < len(segs):
+            segs[row].style = copy.deepcopy(js)
         js.shape = self.cb_judge_shape.currentData()
         js.idle_color = self.btn_idle.color()
         js.idle_scale = self.sl_idle_scale.value()

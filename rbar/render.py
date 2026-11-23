@@ -247,23 +247,116 @@ class BarRenderer:
             p.setCompositionMode(QPainter.CompositionMode_SourceOver)
         if self.th.plate.mode == "plate":
             self._draw_plate(p, w, h)
-        self._draw_axis(p, w, h)
+        dip = self.fade_dip(t_ms)
+        fd = getattr(self.th, "fade", None)
+        scope = str(getattr(fd, "scope", "judge") or "judge") if fd is not None else "judge"
+        self._draw_axis(p, w, h, alpha_scale=(dip if scope in ("judge_axes", "all") else 1.0))
         if self.rs.ticks != "off":
             self._draw_ticks(p, w, h, t_ms)
-        # 哑铃样式要压在音符上面（胶囊最顶层）；菱形式保持原来的层级。
-        dumbbell = str(getattr(self.th.judge, "mode", "diamond")) == "dumbbell"
-        if not dumbbell:
-            self._draw_judge(p, w, h, t_ms)
+        # 分段：菱形层画在音符下面，哑铃层画在音符上面；过渡时两层交叉淡化
+        layers = self.judge_layers(t_ms)
+
+        def is_dumbbell(style) -> bool:
+            return str(getattr(style, "mode", "diamond")) == "dumbbell"
+
+        pre = [(s, o) for s, o in layers if not is_dumbbell(s)]
+        post = [(s, o) for s, o in layers if is_dumbbell(s)]
+        self._draw_judge_layers(p, w, h, t_ms, pre)
+        note_alpha = dip if scope == "all" else 1.0
+        if note_alpha < 0.999:
+            p.setOpacity(max(0.0, note_alpha))
         self._draw_notes(p, w, h, t_ms)
-        if dumbbell:
-            self._draw_judge(p, w, h, t_ms)
+        if note_alpha < 0.999:
+            p.setOpacity(1.0)
+        self._draw_judge_layers(p, w, h, t_ms, post)
         self._draw_overlays(p, w, h, t_ms)
 
+    # ------------------------------------------------------------ 判定区分段
+    def judge_segments(self) -> list:
+        """按开始时间排好序的段落列表（元素带 .start_ms / .end_ms / .style）。"""
+        segs = list(getattr(self.th, "segments", None) or [])
+        return sorted(segs, key=lambda s: float(getattr(s, "start_ms", 0.0)))
+
+    @staticmethod
+    def _seg_contains(seg, t: float) -> bool:
+        st = float(getattr(seg, "start_ms", 0.0))
+        en = float(getattr(seg, "end_ms", 0.0))
+        return t >= st and (en <= st or t < en)
+
+    def _style_at(self, t: float):
+        for seg in self.judge_segments():
+            if self._seg_contains(seg, t):
+                st = getattr(seg, "style", None)
+                if st is not None:
+                    return st
+        return None
+
+    def _fade_half(self) -> float:
+        fd = getattr(self.th, "fade", None)
+        if fd is None or not getattr(fd, "enabled", False):
+            return 0.0
+        return max(0.0, float(getattr(fd, "ms", 0.0))) * 0.5
+
+    def _boundaries(self) -> list[float]:
+        segs = self.judge_segments()
+        return [float(getattr(s, "start_ms", 0.0)) for s in segs[1:]]
+
+    def judge_layers(self, t_ms: float) -> list[tuple[object, float]]:
+        """当前时刻要画的判定区：[(样式, 不透明度)]，过渡中会有两层交叉淡化。"""
+        segs = self.judge_segments()
+        base = self.th.judge
+        if not segs:
+            return [(base, 1.0)]
+        cur = self._style_at(t_ms) or base
+        half = self._fade_half()
+        if half <= 0.0:
+            return [(cur, 1.0)]
+        for b in self._boundaries():
+            if abs(t_ms - b) < half:
+                u = (t_ms - (b - half)) / (2.0 * half)
+                u = max(0.0, min(1.0, u))
+                u = u * u * (3.0 - 2.0 * u)
+                left = self._style_at(b - 0.5) or base
+                right = self._style_at(b + 0.5) or base
+                return [(left, 1.0 - u), (right, u)]
+        return [(cur, 1.0)]
+
+    def fade_dip(self, t_ms: float) -> float:
+        """过渡期的"淡出再淡入"程度：1 = 正常，0 = 完全淡出（用于轴线/音符）。"""
+        half = self._fade_half()
+        if half <= 0.0:
+            return 1.0
+        for b in self._boundaries():
+            if abs(t_ms - b) < half:
+                u = (t_ms - (b - half)) / (2.0 * half)
+                return abs(2.0 * max(0.0, min(1.0, u)) - 1.0)
+        return 1.0
+
+    def _draw_judge_layers(self, p: QPainter, w: float, h: float, t_ms: float,
+                           layers: list[tuple[object, float]]) -> None:
+        """按层画判定区；每层临时把 theme.judge 指向该段样式（绘制代码都读这个字段）。"""
+        if not layers:
+            return
+        orig = self.th.judge
+        try:
+            for style, op in layers:
+                if op <= 0.002:
+                    continue
+                self.th.judge = style
+                p.setOpacity(max(0.0, min(1.0, op)))
+                self._draw_judge(p, w, h, t_ms)
+        finally:
+            self.th.judge = orig
+            p.setOpacity(1.0)
+
     # ------------------------------------------------------------ 横向中轴线
-    def _draw_axis(self, p: QPainter, w: float, h: float) -> None:
+    def _draw_axis(self, p: QPainter, w: float, h: float, alpha_scale: float = 1.0) -> None:
         """基础设置里的横向中轴线：画在正中、位于最底层，两种判定区样式都生效。"""
         ax = self.th.axis
         if not getattr(ax, "enabled", False):
+            return
+        k = max(0.0, min(1.0, float(alpha_scale)))
+        if k <= 0.002:
             return
         y = h * 0.5
         lw = max(0.0, float(getattr(ax, "width", 0.012)) * h)
@@ -271,7 +364,7 @@ class BarRenderer:
         if ow > 0.05:
             # 描边画成「线宽 + 两侧各 ow」，否则会被主线完全盖住
             pen = QPen(qc(str(getattr(ax, "outline_color", "#141a20")),
-                          max(0.0, min(1.0, float(getattr(ax, "outline_alpha", 0.6))))),
+                          max(0.0, min(1.0, float(getattr(ax, "outline_alpha", 0.6)))) * k),
                        lw + ow * 2.0)
             p.setPen(pen)
             p.setBrush(Qt.NoBrush)
@@ -279,7 +372,7 @@ class BarRenderer:
         if lw <= 0.05:
             return
         pen = QPen(qc(str(getattr(ax, "color", "#ffffff")),
-                      max(0.0, min(1.0, float(getattr(ax, "alpha", 0.2))))), lw)
+                      max(0.0, min(1.0, float(getattr(ax, "alpha", 0.2)))) * k), lw)
         p.setPen(pen)
         p.setBrush(Qt.NoBrush)
         p.drawLine(QPointF(0.0, y), QPointF(w, y))

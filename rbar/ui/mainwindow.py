@@ -195,6 +195,7 @@ class MainWindow(QMainWindow):
         # 右侧：谱面 / 外观 / 导出 / 设置
         self.panel_chart = ChartPanel(self.doc)
         self.panel_style = StylePanel(self.doc)
+        self.panel_style.time_provider = lambda: self.position_ms
         self.panel_export = ExportPanel(self.doc)
         self.panel_settings = SettingsPanel(self.doc, self.settings)
         tabs = QTabWidget()

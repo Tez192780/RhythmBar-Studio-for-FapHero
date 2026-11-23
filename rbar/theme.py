@@ -236,6 +236,49 @@ class AxisStyle:
 
 
 @dataclass
+class FadeSettings:
+    """段落之间的淡入淡出。"""
+
+    enabled: bool = True
+    ms: float = 400.0            # 整段过渡时长（边界前后各一半）
+    scope: str = "judge"         # judge = 仅判定区 | judge_axes = 判定区+横向轴线 | all = 再加音符
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(d: dict) -> "FadeSettings":
+        base = FadeSettings()
+        for k, v in (d or {}).items():
+            if hasattr(base, k):
+                setattr(base, k, v)
+        return base
+
+
+@dataclass
+class JudgeSegment:
+    """一段时间内的判定区配置。end_ms <= start_ms 表示一直到结尾。"""
+
+    start_ms: float = 0.0
+    end_ms: float = 0.0
+    style: JudgeStyle = field(default_factory=JudgeStyle)
+
+    def contains(self, t_ms: float) -> bool:
+        return float(self.start_ms) <= float(t_ms) < float(self.end_ms)
+
+    def to_dict(self) -> dict:
+        return {"start_ms": round(float(self.start_ms), 3),
+                "end_ms": round(float(self.end_ms), 3),
+                "style": self.style.to_dict()}
+
+    @staticmethod
+    def from_dict(d: dict) -> "JudgeSegment":
+        return JudgeSegment(float(d.get("start_ms", 0.0) or 0.0),
+                            float(d.get("end_ms", 0.0) or 0.0),
+                            JudgeStyle.from_dict(d.get("style", {}) or {}))
+
+
+@dataclass
 class Theme:
     styles: dict[str, NoteStyle] = field(default_factory=default_styles)
     order: list[str] = field(default_factory=lambda: ["cyan", "magenta", "gray"])
@@ -243,6 +286,9 @@ class Theme:
     judge: JudgeStyle = field(default_factory=JudgeStyle)
     ghost: GhostStyle = field(default_factory=GhostStyle)
     axis: AxisStyle = field(default_factory=AxisStyle)
+    # 判定区分段：为空 = 全程用 judge 这一套
+    segments: list[JudgeSegment] = field(default_factory=list)
+    fade: FadeSettings = field(default_factory=FadeSettings)
 
     # ---------------------------------------------------------------- 便捷访问
     def style(self, key: str) -> NoteStyle:
@@ -267,6 +313,8 @@ class Theme:
             "judge": self.judge.to_dict(),
             "ghost": self.ghost.to_dict(),
             "axis": self.axis.to_dict(),
+            "segments": [s.to_dict() for s in self.segments],
+            "fade": self.fade.to_dict(),
         }
 
     @staticmethod
@@ -282,6 +330,8 @@ class Theme:
         t.judge = JudgeStyle.from_dict(d.get("judge", {}))
         t.ghost = GhostStyle.from_dict(d.get("ghost", {}))
         t.axis = AxisStyle.from_dict(d.get("axis", {}))
+        t.segments = [JudgeSegment.from_dict(x) for x in (d.get("segments") or [])]
+        t.fade = FadeSettings.from_dict(d.get("fade", {}))
         return t
 
     def clone(self) -> "Theme":
