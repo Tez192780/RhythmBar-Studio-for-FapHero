@@ -100,6 +100,10 @@ class Chart:
     def near(self, t: float, window_ms: float) -> list[Note]:
         return self.in_range(t - window_ms, t + window_ms)
 
+    def count_before(self, t: float) -> int:
+        """时间 t（含）之前有多少音符 —— 角落实时 Beat 计数用。"""
+        return bisect_right(self._times, float(t))
+
     def find_at(self, t: float, lane: int, tol_ms: float) -> Note | None:
         best, best_d = None, tol_ms
         for n in self.near(t, tol_ms):
@@ -174,6 +178,21 @@ class RenderSettings:
     tick_alpha: float = 0.22
     judge_ratio: float = 0.5     # 判定点横向位置（0.5 = 正中）
     hide_before: float = 0.0     # 提前隐藏（毫秒，0=不隐藏，走到底自然出画）
+    # 判定点之后的速度倍率：1 = 与判定点前同速；>1 = 过了判定点加速离场
+    # （参考视频里音符命中后是「嗖」地一下飞走，约 3.8 倍）
+    post_speed: float = 1.0
+    # 角落水印文字（空 = 不显示）
+    watermark_text: str = ""
+    watermark_pos: str = "bottom_left"    # 四角
+    watermark_size: float = 0.14          # 字号，相对条高
+    watermark_color: str = "#ffffff"
+    watermark_alpha: float = 0.55
+    # 角落实时 Beat 计数
+    beat_counter: bool = False
+    beat_counter_pos: str = "bottom_right"
+    beat_counter_size: float = 0.14
+    beat_counter_mode: str = "notes"      # notes = 已命中音符数；beats = 按 BPM 的拍号
+    beat_counter_label: str = "BEAT"
 
     def to_dict(self) -> dict:
         return asdict(self)

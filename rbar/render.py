@@ -13,6 +13,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
     QBrush,
     QColor,
+    QFont,
     QLinearGradient,
     QPainter,
     QPainterPath,
@@ -203,8 +204,18 @@ class BarRenderer:
         step = (h * spread) / (n - 1)
         return h * 0.5 + (idx - (n - 1) / 2.0) * step
 
-    def note_x(self, t_note: float, t_now: float, w: float, side: int = 1) -> float:
-        return self.judge_x(w) + side * (t_note - t_now) / 1000.0 * self.speed(w)
+    def note_x(self, t_note: float, t_now: float, w: float, side: int = 1,
+               post: bool = True) -> float:
+        """音符的横向位置。
+
+        过了判定点（t_note < t_now）的按 post_speed 倍率加速离场；
+        参考视频里命中后是「嗖」地飞走（实测约 3.8 倍），1.0 则与旧行为一致。
+        post=False 用于刻度 / 网格这类「时间尺」：它们保持匀速，不跟着音符飞。
+        """
+        dt = float(t_note) - float(t_now)
+        k = float(self.rs.post_speed) if (post and dt < 0.0) else 1.0
+        k = max(0.05, min(20.0, k))
+        return self.judge_x(w) + side * dt / 1000.0 * self.speed(w) * k
 
     def note_radius(self, h: float, st: NoteStyle, scale: float = 1.0) -> float:
         return 0.5 * float(self.rs.note_size) * h * float(st.size) * scale
@@ -214,6 +225,7 @@ class BarRenderer:
                solid_bg: QColor | None = None, clear: bool = True) -> None:
         p.setRenderHint(QPainter.Antialiasing, True)
         p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        p.setRenderHint(QPainter.TextAntialiasing, True)
         rect = QRectF(0, 0, w, h)
         if solid_bg is not None:
             p.fillRect(rect, solid_bg)
@@ -228,6 +240,59 @@ class BarRenderer:
             self._draw_ticks(p, w, h, t_ms)
         self._draw_judge(p, w, h, t_ms)
         self._draw_notes(p, w, h, t_ms)
+        self._draw_overlays(p, w, h, t_ms)
+
+    # ------------------------------------------------------- 水印 / Beat 计数
+    def _text_rect(self, pos: str, w: float, h: float, size: float) -> tuple[QRectF, int]:
+        """按角落名算出文字排版区域与对齐标志。"""
+        margin = max(1.0, h * 0.08)
+        band = max(2.0, size * 1.5)
+        left = str(pos).endswith("left")
+        top = str(pos).endswith("top")
+        y = margin if top else h - margin - band
+        rect = QRectF(margin, y, max(1.0, w - 2 * margin), band)
+        flags = int(Qt.AlignLeft if left else Qt.AlignRight) | int(Qt.AlignVCenter)
+        return rect, flags
+
+    def _corner_font(self, size: float, *, bold: bool) -> QFont:
+        f = QFont()
+        f.setPixelSize(max(1, int(round(size))))
+        f.setBold(bold)
+        return f
+
+    def _draw_overlays(self, p: QPainter, w: float, h: float, t_ms: float) -> None:
+        rs = self.rs
+        text = str(getattr(rs, "watermark_text", "") or "")
+        if text:
+            size = max(1.0, float(getattr(rs, "watermark_size", 0.14)) * h)
+            rect, flags = self._text_rect(str(getattr(rs, "watermark_pos", "bottom_left")),
+                                          w, h, size)
+            p.setFont(self._corner_font(size, bold=False))
+            p.setPen(qc(str(getattr(rs, "watermark_color", "#ffffff")),
+                        max(0.0, min(1.0, float(getattr(rs, "watermark_alpha", 0.55))))))
+            p.drawText(rect, flags, text)
+        if getattr(rs, "beat_counter", False):
+            n = self.beat_count(t_ms)
+            label = str(getattr(rs, "beat_counter_label", "BEAT") or "").strip()
+            body = f"{label} {n}" if label else str(n)
+            size = max(1.0, float(getattr(rs, "beat_counter_size", 0.14)) * h)
+            rect, flags = self._text_rect(str(getattr(rs, "beat_counter_pos", "bottom_right")),
+                                          w, h, size)
+            p.setFont(self._corner_font(size, bold=True))
+            p.setPen(qc("#ffffff", 0.92))
+            p.drawText(rect, flags, body)
+
+    def beat_count(self, t_ms: float) -> int:
+        """角落实时计数：notes = 已命中音符数；beats = 按 BPM 的拍号（从 0 起）。"""
+        rs = self.rs
+        if str(getattr(rs, "beat_counter_mode", "notes")) == "beats":
+            clip = self.p.audio_clip_at(t_ms)
+            if clip is not None:
+                b = clip.timemap.beat(clip.timeline_to_source(t_ms))
+            else:
+                b = self.p.chart.timemap.beat(t_ms)
+            return max(0, int(math.floor(b)))
+        return self.p.chart.count_before(t_ms)
 
     # ----------------------------------------------------------------- 底板
     def _plate_pixmap(self, w: float, h: float, dpr: float):
@@ -330,7 +395,7 @@ class BarRenderer:
                 if major and not is_bar:
                     continue
                 for side in (1, -1):
-                    x = self.note_x(t, t_ms, w, side)
+                    x = self.note_x(t, t_ms, w, side, post=False)
                     if -4 <= x <= w + 4:
                         ln = (bot - top) * (0.5 if is_bar else 0.28)
                         cy = h * 0.5
@@ -351,7 +416,7 @@ class BarRenderer:
                 if major and not is_bar:
                     continue
                 for side in (1, -1):
-                    x = self.note_x(t, t_ms, w, side)
+                    x = self.note_x(t, t_ms, w, side, post=False)
                     if -4 <= x <= w + 4:
                         ln = (bot - top) * (0.5 if is_bar else 0.28)
                         cy = h * 0.5
@@ -516,7 +581,7 @@ class BarRenderer:
                 if n.dur > 0:
                     continue
                 side = self.side_of(n)
-                x = self.judge_x(w) + side * (n.t - t_ms) / 1000.0 * speed
+                x = self.note_x(n.t, t_ms, w, side)
                 y = self.lane_y(n.lane, h)
                 st = th.styles.get(n.type) or th.style(n.type)
                 r = self.note_radius(h, st)
