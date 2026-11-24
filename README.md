@@ -216,6 +216,20 @@ python -m pip install -r requirements.txt
 python main.py
 ```
 
+> 如果你用虚拟环境（推荐，见下），`Start.bat` 会**优先使用项目内的 `.venv`**，
+> 不需要激活；没有 `.venv` 时才退回 PATH 上的 `python`。
+
+**Windows 用虚拟环境（推荐）：**
+
+```
+py -3.12 -m venv .venv
+.venv\Scripts\python -m pip install -r requirements.txt
+```
+
+之后双击 `Start.bat` 即可（会自动选 `.venv` 里的解释器）。
+注意：用 PATH 上的 `python` 安装依赖和用 `.venv` 安装是**两个独立的环境**，
+在其中一个装好的依赖，另一个看不到——这正是「明明装过却提示没装」的常见原因。
+
 **macOS 源码运行：**
 
 ```bash

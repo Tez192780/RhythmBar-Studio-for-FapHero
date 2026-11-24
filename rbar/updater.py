@@ -21,7 +21,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-REPO = "Tez192780/RhythmBar-Studio-for-FapHero"
+REPO = "Cho907INS/RhythmBar-Studio-for-FapHero-frok"
 API_LATEST = f"https://api.github.com/repos/{REPO}/releases/latest"
 API_TAG = f"https://api.github.com/repos/{REPO}/releases/tags/{{tag}}"
 ATOM = f"https://github.com/{REPO}/releases.atom"

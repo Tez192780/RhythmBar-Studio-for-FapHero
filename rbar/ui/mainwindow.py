@@ -49,7 +49,8 @@ from ..audio import (
     peaks,
 )
 from ..doc import Doc
-from ..exporter import compute_range, estimate_size_mb, export_still, export_video
+from ..exporter import (check_output_writable, compute_range, estimate_size_mb,
+                        export_still, export_video)
 from ..model import FORMATS, ExportSettings, Note, Project
 from ..settings import AppSettings
 from ..tasks import Task
@@ -57,7 +58,8 @@ from ..theme import Theme
 from ..timing import BpmSegment
 from ..updater import PAGE as RELEASES_PAGE, pick_asset
 from .dialogs import BpmSegmentDialog, FillRangeDialog, TapTempoDialog
-from .panels import ChartPanel, ExportPanel, NoteTypePanel, SettingsPanel, StylePanel
+from .panels import (ChartPanel, ExportPanel, NoteTypePanel, SettingsPanel,
+                     StatsPanel, StylePanel)
 from .preview import PreviewWidget, RefFrameWidget, SpectrumWidget
 from .timeline import TimelineWidget, fmt_time
 
@@ -194,11 +196,15 @@ class MainWindow(QMainWindow):
         # 右侧：谱面 / 外观 / 导出 / 设置
         self.panel_chart = ChartPanel(self.doc)
         self.panel_style = StylePanel(self.doc)
+        self.panel_style.time_provider = lambda: self.position_ms
+        self.panel_stats = StatsPanel(self.doc)
+        self.panel_stats.time_provider = lambda: self.position_ms
         self.panel_export = ExportPanel(self.doc)
         self.panel_settings = SettingsPanel(self.doc, self.settings)
         tabs = QTabWidget()
         tabs.addTab(self.panel_chart, "谱面 / BPM")
         tabs.addTab(self.panel_style, "外观")
+        tabs.addTab(self.panel_stats, "文字与统计")
         tabs.addTab(self.panel_export, "导出")
         tabs.addTab(self.panel_settings, "设置")
         dock2 = QDockWidget("工程设置", self)
@@ -311,9 +317,9 @@ class MainWindow(QMainWindow):
         grp.addAction(self.a_draw_tool)
         grp.addAction(self.a_range_tool)
         self.tool_group = grp
-        a_selall = act("全选", self.select_all, "Ctrl+A")
-        a_copy = act("复制 (Ctrl+C)", self.copy_notes)
-        a_paste = act("粘贴 (Ctrl+V，落在鼠标处)", lambda: self.paste_notes())
+        self.a_selall = act("全选", self.select_all, "Ctrl+A")
+        self.a_copy = act("复制", self.copy_notes, "Ctrl+C")
+        self.a_paste = act("粘贴（落在鼠标处）", lambda: self.paste_notes(), "Ctrl+V")
         a_dup = act("向后复制一份 (Ctrl+D)", self.duplicate_forward)
         a_quant = act("量化到网格 (Ctrl+Q)", self.quantize_selection)
         a_mirror = act("镜像选中区间 (Ctrl+M)", self.mirror_selection)
@@ -325,7 +331,7 @@ class MainWindow(QMainWindow):
         m_edit.addAction(self.a_draw_tool)
         m_edit.addAction(self.a_range_tool)
         m_edit.addSeparator()
-        for a in (a_selall, a_copy, a_paste, a_dup, a_quant, a_mirror, a_del):
+        for a in (self.a_selall, self.a_copy, self.a_paste, a_dup, a_quant, a_mirror, a_del):
             m_edit.addAction(a)
 
         m_view = self.menuBar().addMenu("视图")
@@ -450,6 +456,9 @@ class MainWindow(QMainWindow):
         self.panel_chart.autoBpmRequested.connect(self.auto_bpm)
         self.panel_chart.clipSplitRequested.connect(self.split_selected_clip)
         self.panel_style.changed.connect(self.on_visual_changed)
+        self.panel_stats.changed.connect(self.on_visual_changed)
+        self.panel_stats.renderChanged.connect(self._capture_export_defaults)
+        self.panel_style.seekRequested.connect(self.seek)
         self.panel_export.changed.connect(self._on_export_changed)
         self.panel_export.exportRequested.connect(self.export_dialog)
         self.panel_export.stillRequested.connect(self.export_still_dialog)
@@ -2094,6 +2103,13 @@ class MainWindow(QMainWindow):
 
     def _run_export(self, t0: float, t1: float, frames: int) -> None:
         ex = self.doc.project.export
+        # 先检查输出位置能不能写：避免渲染完几万帧才在最后一步失败
+        problem = check_output_writable(ex.output)
+        if problem:
+            self._warn(i18n.tr("无法写入输出位置"),
+                       problem + i18n.tr("\n\n请在「导出」面板里换一个目录（例如「视频」或桌面）后重试。"))
+            self.tabs.setCurrentWidget(self.panel_export)
+            return
         dlg = QProgressDialog(i18n.tr("正在导出…"), i18n.tr("取消"), 0, frames, self)
         dlg.setWindowTitle(i18n.tr("导出视频"))
         dlg.setWindowModality(Qt.WindowModal)

@@ -13,6 +13,8 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
     QBrush,
     QColor,
+    QFont,
+    QFontMetricsF,
     QLinearGradient,
     QPainter,
     QPainterPath,
@@ -203,11 +205,32 @@ class BarRenderer:
         step = (h * spread) / (n - 1)
         return h * 0.5 + (idx - (n - 1) / 2.0) * step
 
-    def note_x(self, t_note: float, t_now: float, w: float, side: int = 1) -> float:
-        return self.judge_x(w) + side * (t_note - t_now) / 1000.0 * self.speed(w)
+    def note_x(self, t_note: float, t_now: float, w: float, side: int = 1,
+               post: bool = True) -> float:
+        """音符的横向位置。
+
+        过了判定点（t_note < t_now）的按 post_speed 倍率加速离场；
+        参考视频里命中后是「嗖」地飞走（实测约 3.8 倍），1.0 则与旧行为一致。
+        post=False 用于刻度 / 网格这类「时间尺」：它们保持匀速，不跟着音符飞。
+        """
+        dt = float(t_note) - float(t_now)
+        k = float(self.rs.post_speed) if (post and dt < 0.0) else 1.0
+        k = max(0.05, min(20.0, k))
+        return self.judge_x(w) + side * dt / 1000.0 * self.speed(w) * k
+
+    def content_h(self, h: float) -> float:
+        """内容（音符 / 文字）的尺寸基准高度。
+
+        「条带尺寸」只改画布，不该把 Beat 和字体一起放大，所以内容按
+        `120 × content_scale` 的基准画；导出放大到更大的画布时再按比例跟随。
+        """
+        rs = self.rs
+        scale = max(0.2, min(4.0, float(getattr(rs, "content_scale", 1.0))))
+        nominal = max(1.0, float(getattr(rs, "height", 120) or 120))
+        return float(h) * (120.0 * scale / nominal)
 
     def note_radius(self, h: float, st: NoteStyle, scale: float = 1.0) -> float:
-        return 0.5 * float(self.rs.note_size) * h * float(st.size) * scale
+        return 0.5 * float(self.rs.note_size) * self.content_h(h) * float(st.size) * scale
 
     def ghost_radius(self, h: float, gs: GhostStyle) -> float:
         """残影大小只由残影自己的设置决定，不继承音符类型的大小。"""
@@ -218,6 +241,7 @@ class BarRenderer:
                solid_bg: QColor | None = None, clear: bool = True) -> None:
         p.setRenderHint(QPainter.Antialiasing, True)
         p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        p.setRenderHint(QPainter.TextAntialiasing, True)
         rect = QRectF(0, 0, w, h)
         if solid_bg is not None:
             p.fillRect(rect, solid_bg)
@@ -228,10 +252,334 @@ class BarRenderer:
             p.setCompositionMode(QPainter.CompositionMode_SourceOver)
         if self.th.plate.mode == "plate":
             self._draw_plate(p, w, h)
+        dip = self.fade_dip(t_ms)
+        fd = getattr(self.th, "fade", None)
+        scope = str(getattr(fd, "scope", "judge") or "judge") if fd is not None else "judge"
+        self._draw_axis(p, w, h, alpha_scale=(dip if scope in ("judge_axes", "all") else 1.0))
         if self.rs.ticks != "off":
             self._draw_ticks(p, w, h, t_ms)
-        self._draw_judge(p, w, h, t_ms)
+        # 分段：菱形层画在音符下面，哑铃层画在音符上面；过渡时两层交叉淡化
+        layers = self.judge_layers(t_ms)
+
+        def is_dumbbell(style) -> bool:
+            return str(getattr(style, "mode", "diamond")) == "dumbbell"
+
+        pre = [(s, o) for s, o in layers if not is_dumbbell(s)]
+        post = [(s, o) for s, o in layers if is_dumbbell(s)]
+        self._draw_judge_layers(p, w, h, t_ms, pre)
+        note_alpha = dip if scope == "all" else 1.0
+        if note_alpha < 0.999:
+            p.setOpacity(max(0.0, note_alpha))
         self._draw_notes(p, w, h, t_ms)
+        if note_alpha < 0.999:
+            p.setOpacity(1.0)
+        self._draw_judge_layers(p, w, h, t_ms, post)
+        self._draw_overlays(p, w, h, t_ms)
+
+    # ------------------------------------------------------------ 判定区分段
+    def judge_segments(self) -> list:
+        """按开始时间排好序的段落列表（元素带 .start_ms / .end_ms / .style）。"""
+        segs = list(getattr(self.th, "segments", None) or [])
+        return sorted(segs, key=lambda s: float(getattr(s, "start_ms", 0.0)))
+
+    @staticmethod
+    def _seg_contains(seg, t: float) -> bool:
+        st = float(getattr(seg, "start_ms", 0.0))
+        en = float(getattr(seg, "end_ms", 0.0))
+        return t >= st and (en <= st or t < en)
+
+    def _style_at(self, t: float):
+        for seg in self.judge_segments():
+            if self._seg_contains(seg, t):
+                st = getattr(seg, "style", None)
+                if st is not None:
+                    return st
+        return None
+
+    def _fade_half(self) -> float:
+        fd = getattr(self.th, "fade", None)
+        if fd is None or not getattr(fd, "enabled", False):
+            return 0.0
+        return max(0.0, float(getattr(fd, "ms", 0.0))) * 0.5
+
+    def _boundaries(self) -> list[float]:
+        segs = self.judge_segments()
+        return [float(getattr(s, "start_ms", 0.0)) for s in segs[1:]]
+
+    def judge_layers(self, t_ms: float) -> list[tuple[object, float]]:
+        """当前时刻要画的判定区：[(样式, 不透明度)]，过渡中会有两层交叉淡化。"""
+        segs = self.judge_segments()
+        base = self.th.judge
+        if not segs:
+            return [(base, 1.0)]
+        cur = self._style_at(t_ms) or base
+        half = self._fade_half()
+        if half <= 0.0:
+            return [(cur, 1.0)]
+        for b in self._boundaries():
+            if abs(t_ms - b) < half:
+                u = (t_ms - (b - half)) / (2.0 * half)
+                u = max(0.0, min(1.0, u))
+                u = u * u * (3.0 - 2.0 * u)
+                left = self._style_at(b - 0.5) or base
+                right = self._style_at(b + 0.5) or base
+                return [(left, 1.0 - u), (right, u)]
+        return [(cur, 1.0)]
+
+    def fade_dip(self, t_ms: float) -> float:
+        """过渡期的"淡出再淡入"程度：1 = 正常，0 = 完全淡出（用于轴线/音符）。"""
+        half = self._fade_half()
+        if half <= 0.0:
+            return 1.0
+        for b in self._boundaries():
+            if abs(t_ms - b) < half:
+                u = (t_ms - (b - half)) / (2.0 * half)
+                return abs(2.0 * max(0.0, min(1.0, u)) - 1.0)
+        return 1.0
+
+    def _draw_judge_layers(self, p: QPainter, w: float, h: float, t_ms: float,
+                           layers: list[tuple[object, float]]) -> None:
+        """按层画判定区；每层临时把 theme.judge 指向该段样式（绘制代码都读这个字段）。"""
+        if not layers:
+            return
+        orig = self.th.judge
+        try:
+            for style, op in layers:
+                if op <= 0.002:
+                    continue
+                self.th.judge = style
+                p.setOpacity(max(0.0, min(1.0, op)))
+                self._draw_judge(p, w, h, t_ms)
+        finally:
+            self.th.judge = orig
+            p.setOpacity(1.0)
+
+    # ------------------------------------------------------------ 横向中轴线
+    def _draw_axis(self, p: QPainter, w: float, h: float, alpha_scale: float = 1.0) -> None:
+        """基础设置里的横向中轴线：画在正中、位于最底层，两种判定区样式都生效。"""
+        ax = self.th.axis
+        if not getattr(ax, "enabled", False):
+            return
+        k = max(0.0, min(1.0, float(alpha_scale)))
+        if k <= 0.002:
+            return
+        y = h * 0.5
+        lw = max(0.0, float(getattr(ax, "width", 0.012)) * h)
+        ow = max(0.0, float(getattr(ax, "outline_w", 0.0)) * h)
+        if ow > 0.05:
+            # 描边画成「线宽 + 两侧各 ow」，否则会被主线完全盖住
+            pen = QPen(qc(str(getattr(ax, "outline_color", "#141a20")),
+                          max(0.0, min(1.0, float(getattr(ax, "outline_alpha", 0.6)))) * k),
+                       lw + ow * 2.0)
+            p.setPen(pen)
+            p.setBrush(Qt.NoBrush)
+            p.drawLine(QPointF(0.0, y), QPointF(w, y))
+        if lw <= 0.05:
+            return
+        pen = QPen(qc(str(getattr(ax, "color", "#ffffff")),
+                      max(0.0, min(1.0, float(getattr(ax, "alpha", 0.2)))) * k), lw)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawLine(QPointF(0.0, y), QPointF(w, y))
+
+    # ------------------------------------------------------- 水印 / Beat 计数
+    def _text_rect(self, pos: str, w: float, h: float, size: float) -> tuple[QRectF, int]:
+        """按角落名算出文字排版区域与对齐标志。"""
+        margin = max(1.0, h * 0.08)
+        band = max(2.0, size * 1.5)
+        left = str(pos).endswith("left")
+        top = str(pos).endswith("top")
+        y = margin if top else h - margin - band
+        rect = QRectF(margin, y, max(1.0, w - 2 * margin), band)
+        flags = int(Qt.AlignLeft if left else Qt.AlignRight) | int(Qt.AlignVCenter)
+        return rect, flags
+
+    def _corner_font(self, size: float, *, bold: bool) -> QFont:
+        f = QFont()
+        f.setPixelSize(max(1, int(round(size))))
+        f.setBold(bold)
+        return f
+
+    # ------------------------------------------------------------ 统计分段
+    def stat_segments(self) -> list:
+        segs = list(getattr(self.rs, "stat_segments", None) or [])
+        return sorted(segs, key=lambda s: float(getattr(s, "start_ms", 0.0)))
+
+    def stat_segment_at(self, t_ms: float) -> tuple[int, object | None]:
+        """返回 (段序号 0 起, 段对象)；不在任何段里返回 (-1, None)。"""
+        for i, seg in enumerate(self.stat_segments()):
+            st = float(getattr(seg, "start_ms", 0.0))
+            en = float(getattr(seg, "end_ms", 0.0))
+            if float(t_ms) >= st and (en <= st or float(t_ms) < en):
+                return i, seg
+        return -1, None
+
+    def _duration_ms(self) -> float:
+        end = max(self.p.media_end_ms(), float(self.p.audio_duration_ms or 0.0))
+        notes = self.p.chart.notes
+        if notes:
+            end = max(end, max(n.end for n in notes))
+        return max(1.0, end)
+
+    def stats(self, t_ms: float) -> dict:
+        """统计口径集中在这里，计数显示与进度条共用。"""
+        chart = self.p.chart
+        times = [n.t for n in chart.notes]
+        total_passed = sum(1 for x in times if x <= t_ms)
+        total_all = len(times)
+        idx, seg = self.stat_segment_at(t_ms)
+        duration = self._duration_ms()
+        if seg is not None:
+            st = float(getattr(seg, "start_ms", 0.0))
+            en = float(getattr(seg, "end_ms", 0.0))
+            if en <= st:
+                # 开放式段落（到结尾）：不设上界，否则最后一颗音符会被排除
+                seg_all = sum(1 for x in times if st <= x)
+                seg_passed = sum(1 for x in times if st <= x <= t_ms)
+                en = duration
+            else:
+                seg_all = sum(1 for x in times if st <= x < en)
+                seg_passed = sum(1 for x in times if st <= x <= t_ms and x < en)
+            seg_elapsed = max(0.0, float(t_ms) - st)
+            seg_span = max(1.0, en - st)
+        else:
+            st, en = 0.0, duration
+            seg_all = total_all
+            seg_passed = total_passed
+            seg_elapsed = float(t_ms)
+            seg_span = duration
+        return {
+            "total_passed": total_passed,
+            "total_all": total_all,
+            "seg_index": idx,
+            "seg_all": seg_all,
+            "seg_passed": seg_passed,
+            "seg_elapsed": seg_elapsed,
+            "seg_span": seg_span,
+            "now": float(t_ms),
+            "duration": duration,
+        }
+
+    def _count_text(self, t_ms: float) -> str:
+        rs = self.rs
+        info = self.stats(t_ms)
+        label = str(getattr(rs, "beat_counter_label", "BEAT") or "").strip() or "BEAT"
+        display = str(getattr(rs, "beat_counter_display", "total") or "total")
+        if display == "segment":
+            n = info["seg_passed"] if info["seg_index"] >= 0 else info["total_passed"]
+            body = f"{label} {n}"
+        elif display == "both":
+            body = f"{label} {info['seg_passed']} // {info['total_passed']}"
+        else:
+            if str(getattr(rs, "beat_counter_mode", "notes")) == "beats":
+                clip = self.p.audio_clip_at(t_ms)
+                if clip is not None:
+                    b = clip.timemap.beat(clip.timeline_to_source(t_ms))
+                else:
+                    b = self.p.chart.timemap.beat(t_ms)
+                body = f"{label} {max(0, int(b))}"
+            else:
+                body = f"{label} {info['total_passed']}"
+        if bool(getattr(rs, "beat_counter_show_phase", False)):
+            phase = info["seg_index"] + 1 if info["seg_index"] >= 0 else 1
+            body = f"Phase {phase}    {body}"
+        return body
+
+    def _draw_progress(self, p: QPainter, w: float, h: float, t_ms: float) -> None:
+        rs = self.rs
+        if not getattr(rs, "progress_bar", False):
+            return
+        info = self.stats(t_ms)
+        mode = str(getattr(rs, "progress_mode", "beats") or "beats")
+        if mode == "time":
+            frac = info["now"] / info["duration"]
+        elif mode == "seg_time":
+            frac = info["seg_elapsed"] / info["seg_span"]
+        elif mode == "seg_beats":
+            frac = info["seg_passed"] / info["seg_all"] if info["seg_all"] else 0.0
+        else:
+            frac = info["total_passed"] / info["total_all"] if info["total_all"] else 0.0
+        frac = max(0.0, min(1.0, float(frac)))
+
+        k = self.content_h(h) / 120.0          # 进度条尺寸按内容缩放
+        bw = max(4.0, float(getattr(rs, "progress_w", 400.0)) * k)
+        bh = max(2.0, float(getattr(rs, "progress_h", 40.0)) * k)
+        cx = w * max(0.0, min(1.0, float(getattr(rs, "progress_x", 0.5))))
+        cy = h * max(0.0, min(1.0, float(getattr(rs, "progress_y", 0.88))))
+        rect = QRectF(cx - bw * 0.5, cy - bh * 0.5, bw, bh)
+        radius = bh * 0.5 if bool(getattr(rs, "progress_round", True)) else 0.0
+
+        p.save()
+        p.setOpacity(max(0.0, min(1.0, float(getattr(rs, "progress_opacity", 0.85)))))
+        # 填充
+        if frac > 0.0005:
+            fw = bw * frac
+            fill = QRectF(rect.left(), rect.top(), fw, bh)
+            path = QPainterPath()
+            if radius > 0.5 and fw >= bh:
+                path.addRoundedRect(fill, radius, radius)
+            else:
+                path.addRect(fill)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QBrush(qc(str(getattr(rs, "progress_fill", "#5ad1ff")))))
+            p.drawPath(path)
+        # 边框
+        border_w = max(0.0, float(getattr(rs, "progress_border_w", 0.06)) * bh)
+        if border_w > 0.05:
+            outline = QPainterPath()
+            if radius > 0.5:
+                outline.addRoundedRect(rect, radius, radius)
+            else:
+                outline.addRect(rect)
+            pen = QPen(qc(str(getattr(rs, "progress_border_color", "#ffffff")),
+                          max(0.0, min(1.0, float(getattr(rs, "progress_border_alpha", 0.8))))),
+                       border_w)
+            p.setPen(pen)
+            p.setBrush(Qt.NoBrush)
+            p.drawPath(outline)
+        p.restore()
+
+    def _draw_overlays(self, p: QPainter, w: float, h: float, t_ms: float) -> None:
+        rs = self.rs
+        text = str(getattr(rs, "watermark_text", "") or "")
+        if text:
+            size = max(1.0, float(getattr(rs, "watermark_size", 0.14)) * self.content_h(h))
+            rect, flags = self._text_rect(str(getattr(rs, "watermark_pos", "bottom_left")),
+                                          w, h, size)
+            p.setFont(self._corner_font(size, bold=False))
+            p.setPen(qc(str(getattr(rs, "watermark_color", "#ffffff")),
+                        max(0.0, min(1.0, float(getattr(rs, "watermark_alpha", 0.55))))))
+            p.drawText(rect, flags, text)
+        if getattr(rs, "beat_counter", False):
+            body = self._count_text(t_ms)
+            size = max(1.0, float(getattr(rs, "beat_counter_size", 0.14)) * self.content_h(h))
+            font = self._corner_font(size, bold=True)
+            p.setFont(font)
+            p.setPen(qc(str(getattr(rs, "beat_counter_color", "#ffffff") or "#ffffff"),
+                        max(0.0, min(1.0, float(getattr(rs, "beat_counter_alpha", 0.92))))))
+            fx = float(getattr(rs, "beat_counter_x", 0.94))
+            fy = float(getattr(rs, "beat_counter_y", 0.90))
+            cx = w * max(0.0, min(1.0, fx))
+            cy = h * max(0.0, min(1.0, fy))
+            # 以 (cx, cy) 为锚点：偏右时文字右对齐、偏左时左对齐，垂直居中
+            fm = QFontMetricsF(font)
+            tw = fm.horizontalAdvance(body)
+            x0 = cx - tw if fx >= 0.5 else cx
+            baseline = cy + (fm.ascent() - fm.descent()) * 0.5
+            p.drawText(QPointF(x0, baseline), body)
+        self._draw_progress(p, w, h, t_ms)
+
+    def beat_count(self, t_ms: float) -> int:
+        """角落实时计数：notes = 已命中音符数；beats = 按 BPM 的拍号（从 0 起）。"""
+        rs = self.rs
+        if str(getattr(rs, "beat_counter_mode", "notes")) == "beats":
+            clip = self.p.audio_clip_at(t_ms)
+            if clip is not None:
+                b = clip.timemap.beat(clip.timeline_to_source(t_ms))
+            else:
+                b = self.p.chart.timemap.beat(t_ms)
+            return max(0, int(math.floor(b)))
+        return self.p.chart.count_before(t_ms)
 
     # ----------------------------------------------------------------- 底板
     def _plate_pixmap(self, w: float, h: float, dpr: float):
@@ -334,7 +682,7 @@ class BarRenderer:
                 if major and not is_bar:
                     continue
                 for side in (1, -1):
-                    x = self.note_x(t, t_ms, w, side)
+                    x = self.note_x(t, t_ms, w, side, post=False)
                     if -4 <= x <= w + 4:
                         ln = (bot - top) * (0.5 if is_bar else 0.28)
                         cy = h * 0.5
@@ -355,7 +703,7 @@ class BarRenderer:
                 if major and not is_bar:
                     continue
                 for side in (1, -1):
-                    x = self.note_x(t, t_ms, w, side)
+                    x = self.note_x(t, t_ms, w, side, post=False)
                     if -4 <= x <= w + 4:
                         ln = (bot - top) * (0.5 if is_bar else 0.28)
                         cy = h * 0.5
@@ -382,6 +730,9 @@ class BarRenderer:
 
     def _draw_judge(self, p: QPainter, w: float, h: float, t_ms: float) -> None:
         js: JudgeStyle = self.th.judge
+        if str(getattr(js, "mode", "diamond")) == "dumbbell":
+            self._draw_judge_dumbbell(p, w, h, t_ms)
+            return
         jx = self.judge_x(w)
         pulse = self._judge_pulse(t_ms)
         if js.line_alpha > 0 or pulse > 0:
@@ -400,28 +751,370 @@ class BarRenderer:
             p.drawEllipse(QPointF(jx, h * 0.5), r, r)
         self._draw_judge_diamond(p, w, h, t_ms)
 
-    def _judge_target(self, t_ms: float) -> tuple[Note | None, float]:
+    def _judge_target(self, t_ms: float, span: float | None = None) -> tuple[Note | None, float]:
         """找当前“正在被打 / 刚被打到”的音符，返回 (音符, dt)。
 
         优先选已经命中（0 <= dt <= flash_ms）的音符；否则退而选最近的未来音符。
         原先直接把未来音符也算进“最近”，密集谱面（音符间隔 < flash_ms）会把
         已经命中的音符挤掉，导致判定菱形不闪。
+
+        span 可以调大，让「命中前的渐大」也有目标音符可跟。
         """
         js: JudgeStyle = self.th.judge
-        span = max(float(js.window_ms), float(js.flash_ms)) + 40.0
+        near_span = (float(span) if span else
+                     max(float(js.window_ms), float(js.flash_ms)) + 40.0)
         best_hit, best_hit_dt = None, 1e18
         best_future, best_future_dt = None, 1e18
-        for n in self.p.chart.near(t_ms, span):
+        for n in self.p.chart.near(t_ms, near_span):
             dt = t_ms - n.t
             if 0.0 <= dt <= float(js.flash_ms):
                 if dt < best_hit_dt:
                     best_hit, best_hit_dt = n, dt
-            elif -float(js.window_ms) <= dt < 0.0:
+            elif -near_span <= dt < 0.0:
                 if abs(dt) < abs(best_future_dt):
                     best_future, best_future_dt = n, dt
         if best_hit is not None:
             return best_hit, best_hit_dt
         return best_future, best_future_dt
+
+    def _tint_k(self, dt: float) -> float:
+        """变色强度：命中前渐入（db_tint_ramp_ms），命中那一帧最浓，之后按 flash_ms 淡出。"""
+        js: JudgeStyle = self.th.judge
+        ramp = max(1.0, float(getattr(js, "db_tint_ramp_ms", 140.0)))
+        fade = max(1.0, float(js.flash_ms))
+        if dt < -ramp or dt > fade:
+            return 0.0
+        if dt < 0.0:
+            u = (dt + ramp) / ramp                 # 0 → 1
+            return u * u * (3.0 - 2.0 * u)
+        return 1.0 - dt / fade
+
+    # --------------------------------------------- 命中脉冲包络（渐大 → 峰值 → 渐小）
+    @staticmethod
+    def _impact_env(dt: float, total_ms: float, ramp_ms: float | None = None) -> float:
+        """命中脉冲：dt=0（命中那一帧）为峰值 1.0。
+
+        渐大段长度 = ramp_ms（默认 total/2），由调用方夹到「不超过下落时长」，
+        所以膨胀时长确实决定"什么时候开始变大"，同时峰值仍稳稳落在最低点。
+        """
+        total = float(total_ms or 0.0)
+        if total <= 0.0:
+            return 0.0
+        decay = total * 0.5
+        ramp = float(ramp_ms) if ramp_ms is not None else decay
+        ramp = max(1.0, ramp)
+        if dt < 0.0:
+            if dt <= -ramp:
+                return 0.0
+            u = (dt + ramp) / ramp                      # 0 → 1 逐渐接近命中
+            return u * u * (3.0 - 2.0 * u)              # smoothstep：渐大
+        if dt >= decay:
+            return 0.0
+        u = dt / decay
+        return (1.0 - u) ** 1.6                         # 渐小
+
+    # ------------------------------------------------------- 哑铃判定点（新样式）
+    def _feedback_kind(self, st: NoteStyle | None) -> str:
+        """这个音符类型在哑铃判定点上用 A（浅）/ B（深）/ C（微）反馈。
+
+        auto = 按尺寸给个建议：明显比默认大（size ≥ 1.2）用 B，否则 A。
+        尺寸只是默认建议，用户可以在「音符类型」面板里对每种类型手动指定。
+        """
+        if st is None:
+            return "A"
+        want = str(getattr(st, "feedback", "auto") or "auto").upper()
+        if want in ("A", "B", "C"):
+            return want
+        return "B" if float(getattr(st, "size", 1.0)) >= 1.2 else "A"
+
+    def _anchor_notes(self, t_ms: float) -> tuple[Note | None, Note | None]:
+        """当前时间前后最近的两颗音符（用于把胶囊相位锚在「Beat 到达」上）。"""
+        prev_note = next_note = None
+        for n in self.p.chart.near(t_ms, 6000.0):
+            if n.t <= t_ms:
+                if prev_note is None or n.t > prev_note.t:
+                    prev_note = n
+            else:
+                if next_note is None or n.t < next_note.t:
+                    next_note = n
+        return prev_note, next_note
+
+    def _judge_phase(self, t_ms: float) -> tuple[float, Note | None, Note | None, bool]:
+        """返回 (相位 0..1, 上一颗音符, 下一颗音符, 是否静止)。
+
+        相位 0 = 上一颗音符刚到达判定点（胶囊最低点），相位 1 = 下一颗到达。
+        锚在音符上而不是音频拍网格上：这样「最低点 = Beat 到达」永远成立。
+        没有上一颗 / 没有下一颗 / 两颗间隔超过 db_idle_gap_ms 时返回静止，
+        长条不再空转往复（参考视频里没有 Beat 的段落也没有这种运动）。
+        """
+        js: JudgeStyle = self.th.judge
+        prev_note, next_note = self._anchor_notes(t_ms)
+        gap_ms = max(50.0, float(getattr(js, "db_idle_gap_ms", 1500.0)))
+        if prev_note is None:
+            return 0.0, None, next_note, True          # 还没到第一颗 Beat
+        if next_note is None:
+            return 0.0, prev_note, None, True          # 后面再也没有 Beat
+        span = float(next_note.t) - float(prev_note.t)
+        if span <= 0.0 or span > gap_ms:
+            return 0.0, prev_note, next_note, True     # 间隔太长：停住
+        return (t_ms - prev_note.t) / span, prev_note, next_note, False
+
+    def _top_mult(self, note: Note | None) -> float:
+        """胶囊最高点（倍 half_len）。开启「分模式最高点」后按该音符的 A/B/C 取各自的值。"""
+        js: JudgeStyle = self.th.judge
+        base = max(0.05, float(getattr(js, "db_travel_top", 0.85)))
+        if not bool(getattr(js, "db_top_split", False)) or note is None:
+            return base
+        st = self.th.styles.get(note.type)
+        if st is None:
+            return base
+        kind = self._feedback_kind(st).lower()
+        return max(0.05, float(getattr(js, f"db_top_{kind}", base)))
+
+    def _dip_mult(self, note: Note | None) -> float:
+        """某颗音符对应的下沉深度（单位 = half_len 的倍数）。"""
+        js: JudgeStyle = self.th.judge
+        if note is None:
+            return float(getattr(js, "db_dip_a", 0.77))
+        st = self.th.styles.get(note.type)
+        if st is None:
+            st = NoteStyle(key=note.type, name=note.type)
+        kind = self._feedback_kind(st)
+        if kind == "B":
+            return float(getattr(js, "db_dip_b", 1.45))
+        if kind == "C":
+            return float(getattr(js, "db_dip_c", 0.50))
+        return float(getattr(js, "db_dip_a", 0.77))
+
+    def _dumbbell_geometry(self, h: float) -> tuple[float, float, float, float, float]:
+        """返回 (中轴 y, 上圆 y, 下圆 y, 圆点半径, half_len 像素)。"""
+        js: JudgeStyle = self.th.judge
+        scale = max(0.2, float(getattr(js, "db_scale", 1.0)))
+        cy = h * 0.5
+        half_px = max(1.0, float(getattr(js, "db_half_len", 0.31)) * h * scale)
+        return cy, cy - half_px, cy + half_px, max(1.0, float(
+            getattr(js, "db_circle_r", 0.040)) * h * scale), half_px
+
+    def _capsule_ynorm(self, t_ms: float) -> float:
+        """胶囊中心高度（相对条高）。缓升 + 加速下落，Beat 到达时正好在最低点。
+
+        进出空闲（前面/后面没有 Beat、或间隔太长）时不跳变：
+        在 db_idle_glide_ms 内平滑滑向最高点，或从最高点平滑落向「即将到来的那一拍」。
+        """
+        js: JudgeStyle = self.th.judge
+        frac, prev_note, next_note, idle = self._judge_phase(t_ms)
+        half = max(0.01, float(getattr(js, "db_half_len", 0.31))
+                   * max(0.2, float(getattr(js, "db_scale", 1.0))))
+
+        def top_of(note: Note | None) -> float:
+            return 0.5 - self._top_mult(note) * half
+
+        def dip(note: Note | None) -> float:
+            return 0.5 + self._dip_mult(note) * half
+
+        if idle:
+            rest = top_of(prev_note if prev_note is not None else next_note)
+            # 平滑过渡：刚过完一颗 → 从最低点升回最高点；快要来下一颗 → 从最高点落下去
+            glide = max(0.0, float(getattr(js, "db_idle_glide_ms", 400.0)))
+            if glide <= 0.0:
+                return rest
+            if prev_note is not None:
+                since = t_ms - float(prev_note.t)
+                if 0.0 <= since < glide:
+                    u = since / glide
+                    return dip(prev_note) + (rest - dip(prev_note)) * (u * u * (3.0 - 2.0 * u))
+            if next_note is not None:
+                left = float(next_note.t) - t_ms
+                if 0.0 <= left < glide:
+                    u = 1.0 - left / glide
+                    return rest + (dip(next_note) - rest) * (u * u * (3.0 - 2.0 * u))
+            return rest
+
+        mode = str(getattr(js, "db_ease_mode", "both") or "both").lower()
+        strength = max(0.0, min(1.0, float(getattr(js, "db_ease_strength", 0.7))))
+        slow_top = mode in ("top", "both")          # 最高点缓入缓出
+        slow_bottom = mode == "both"                # 最低点（命中处）也缓入缓出
+
+        rise = max(0.05, min(0.95, float(getattr(js, "db_rise_frac", 0.71))))
+        if frac < rise:
+            top = top_of(prev_note)                           # 上升段用这一颗对应的最高点
+            d = dip(prev_note)                                # 刚从最低点往上走
+            u = frac / rise
+            k = self._ease(u, at_start=slow_bottom, at_end=slow_top, strength=strength)
+            return d + (top - d) * k
+        top = top_of(next_note)                               # 下落段用下一颗对应的最高点
+        d = dip(next_note)                                    # 正在砸向下一颗
+        u = (frac - rise) / (1.0 - rise)
+        k = self._ease(u, at_start=slow_top, at_end=slow_bottom, strength=strength)
+        return top + (d - top) * k
+
+    @staticmethod
+    def _ease(u: float, *, at_start: bool, at_end: bool, strength: float) -> float:
+        """把 0→1 的进度 u 做缓动整形；at_start/at_end 表示该端点处速度为 0。
+
+        strength 是"往缓动方向混合多少"：0 = 完全线性（匀速），1 = 完全缓动。
+        """
+        u = max(0.0, min(1.0, float(u)))
+        k = max(0.0, min(1.0, float(strength)))
+        if at_start and at_end:
+            shaped = u * u * (3.0 - 2.0 * u)          # smoothstep：两端都停一下
+        elif at_end:
+            shaped = 1.0 - (1.0 - u) ** 2.2           # ease-out：快到终点时减速
+        elif at_start:
+            shaped = u ** 2.2                         # ease-in：起步时加速
+        else:
+            shaped = u
+        return u + (shaped - u) * k
+
+    def _cap_pop_mult(self, st: NoteStyle | None) -> float:
+        """胶囊膨胀倍率：默认统一值；开启「分模式」后按该音符的 A/B/C 取各自的值。"""
+        js: JudgeStyle = self.th.judge
+        base = max(1.0, float(getattr(js, "db_cap_pop", 1.16)))
+        if not bool(getattr(js, "db_cap_pop_split", False)) or st is None:
+            return base
+        kind = self._feedback_kind(st).lower()
+        return max(1.0, float(getattr(js, f"db_cap_pop_{kind}", base)))
+
+    def _dumbbell_feedback(self, st: NoteStyle | None, dt: float, h: float,
+                           hit: bool, ramp: float | None = None,
+                           dense: float = 1.0) -> tuple[float, float, float, float, float]:
+        """命中形变：(圆点膨胀, 整体缩放, x 偏移, y 偏移, 胶囊膨胀)。
+
+        三者都用同一个"命中脉冲"包络：命中那一帧最大，之前渐大、之后渐小。
+        ramp 控制渐大段长度（由膨胀时长决定，并被夹到不超过下落时长）。
+        dense（0~1）用来抑制密集节拍下抖动的叠加：间隔越短，抖动越弱。
+        A：圆点膨胀；B：整体放大 + 颤抖；C：只有胶囊膨胀。
+        """
+        js: JudgeStyle = self.th.judge
+        if not hit:
+            return 1.0, 1.0, 0.0, 0.0, 1.0
+
+        kind = self._feedback_kind(st)
+        # 胶囊膨胀：A/B/C 都有（倍率可分别设置，1.0 = 不膨胀）
+        cap_env = self._impact_env(dt, float(getattr(js, "db_cap_pop_ms", 280.0)), ramp)
+        cap_mult = self._cap_pop_mult(st)
+        cap_pop = 1.0 + (cap_mult - 1.0) * cap_env
+
+        if kind == "C":
+            # 微下沉：只保留胶囊膨胀，不膨胀圆点、不整体放大、也不抖
+            return 1.0, 1.0, 0.0, 0.0, cap_pop
+
+        if kind == "A":
+            env = self._impact_env(dt, float(getattr(js, "db_pop_ms", 320.0)), ramp)
+            pop = 1.0 + (float(getattr(js, "db_pop_scale", 1.65)) - 1.0) * env
+            return pop, 1.0, 0.0, 0.0, cap_pop
+
+        total = float(getattr(js, "db_shake_ms", 320.0))
+        env = self._impact_env(dt, total, ramp)
+        scale = 1.0 + (float(getattr(js, "db_shake_scale", 1.12)) - 1.0) * env
+        amp = 0.0
+        shake_dur = float(getattr(js, "db_shake_dur_ms", 600.0))
+        if dt >= 0.0 and shake_dur > 0.0:
+            u = min(1.0, dt / shake_dur)
+            amp = (float(getattr(js, "db_shake_amp", 0.025)) * h
+                   * (1.0 - u) ** 1.5 * max(0.0, min(1.0, dense)))
+        ph = 2.0 * math.pi * float(getattr(js, "db_shake_hz", 30.0)) * dt / 1000.0
+        return 1.0, scale, amp * math.sin(ph), amp * 0.55 * math.sin(ph * 1.7 + 0.9), cap_pop
+
+    def _draw_judge_dumbbell(self, p: QPainter, w: float, h: float, t_ms: float) -> None:
+        """哑铃判定点：上下圆点 + 细竖杆 + 沿杆滑动的横胶囊。
+
+        几何以 Beat 中轴为中心上下对称；绘制顺序为 杆 → 圆点 → 胶囊，
+        胶囊永远在最上层，不会被杆、圆点或音符遮住。
+        """
+        js: JudgeStyle = self.th.judge
+        jx = self.judge_x(w)
+        # 命中前后都要参与：渐大发生在命中之前，所以回看得比判定窗口更远
+        span = max(float(js.window_ms),
+                   float(getattr(js, "db_tint_ramp_ms", 140.0)),
+                   float(getattr(js, "db_pop_ms", 320.0)) / 2.0,
+                   float(getattr(js, "db_shake_ms", 320.0)) / 2.0,
+                   float(getattr(js, "db_cap_pop_ms", 280.0)) / 2.0)
+        n, dt = self._judge_target(t_ms, span)
+        st = self.th.styles.get(n.type) if n is not None else None
+        if n is not None and st is None:
+            st = NoteStyle(key=n.type, name=n.type)
+
+        # 命中染色：命中前就开始向该 Beat 的颜色渐变，命中那一帧达到最浓，然后慢慢退回
+        k = 0.0
+        hit = n is not None and abs(dt) <= span
+        if hit and js.flash:
+            k = self._tint_k(dt) * max(0.0, min(1.0, float(js.tint)))
+        db_color = qc(str(getattr(js, "db_color", "") or js.idle_color))
+        color = mix(db_color, qc(st.color), k) if (st is not None and k > 0.001) else db_color
+        outline_w_scale = max(0.0, float(getattr(js, "db_outline_w", 1.0)))
+        outline_alpha = max(0.0, min(1.0, float(getattr(js, "db_outline_alpha", 1.0))))
+        outline_src = (str(getattr(js, "db_outline_color", "") or "")
+                       or (st.outline if st is not None else "#141a20"))
+        outline = qc(outline_src, outline_alpha)
+        outline_on = outline_w_scale > 0.001 and outline_alpha > 0.001
+
+        # 胶囊下落进程：最高点 0 → 最低点 1；用来把"渐大"夹到不超过下落时长
+        half_n = max(0.01, float(getattr(js, "db_half_len", 0.31))
+                     * max(0.2, float(getattr(js, "db_scale", 1.0))))
+        top_n = 0.5 - self._top_mult(n) * half_n
+        dip_n = 0.5 + self._dip_mult(n) * half_n
+        yn = self._capsule_ynorm(t_ms)
+
+        # 渐大段长度：由膨胀时长决定，但不超过这一拍的下落时长（不会从上升段就开始胀）
+        frac_n, prev_n, next_n, idle_n = self._judge_phase(t_ms)
+        period = (float(next_n.t) - float(prev_n.t)) if (prev_n and next_n) else 0.0
+        rise = max(0.05, min(0.95, float(getattr(js, "db_rise_frac", 0.71))))
+        fall_ms = (1.0 - rise) * period if period > 0 else 0.0
+        cap_total = float(getattr(js, "db_cap_pop_ms", 280.0))
+        ramp = cap_total * 0.5
+        if fall_ms > 0.0:
+            ramp = min(ramp, max(1.0, fall_ms))
+        # 密集节拍下抑制抖动叠加：一拍的时长越短，抖动越弱
+        shake_dur = max(1.0, float(getattr(js, "db_shake_dur_ms", 600.0)))
+        dense = max(0.15, min(1.0, period / shake_dur)) if period > 0 else 1.0
+
+        pop_circle, scale, dx, dy, cap_pop = self._dumbbell_feedback(
+            st, dt, h, hit, ramp=ramp, dense=dense)
+        cy, y_top, y_bot, r_c, half_px = self._dumbbell_geometry(h)
+        scale_geo = max(0.2, float(getattr(js, "db_scale", 1.0)))
+        cw = max(2.0, float(getattr(js, "db_capsule_w", 0.26)) * h * scale_geo)
+        ch = max(2.0, float(getattr(js, "db_capsule_h", 0.10)) * h * scale_geo)
+        hw = max(1.0, float(getattr(js, "db_handle_w", 0.016)) * h * scale_geo)
+
+        p.save()
+        p.translate(jx + dx, cy + dy)
+        p.scale(scale, scale)
+        p.translate(-jx, -cy)
+
+        # 1) 竖杆：实心纯色杆 + 两侧描边（中间不留空，所以不会透出背景）
+        rod_w = max(2.0, hw * 2.0)
+        rod = QRectF(jx - rod_w * 0.5, y_top, rod_w, max(1.0, y_bot - y_top))
+        rod_path = QPainterPath()
+        rod_path.addRoundedRect(rod, rod_w * 0.5, rod_w * 0.5)
+        p.setPen(QPen(outline, hw * 0.7 * outline_w_scale) if outline_on else Qt.NoPen)
+        p.setBrush(QBrush(color))
+        p.drawPath(rod_path)
+
+        # 2) 上下圆点（A 反馈时在命中瞬间膨胀）
+        rr = r_c * pop_circle
+        p.setPen(QPen(outline, r_c * 0.30 * outline_w_scale) if outline_on else Qt.NoPen)
+        p.setBrush(QBrush(color))
+        p.drawEllipse(QPointF(jx, y_top), rr, rr)
+        p.drawEllipse(QPointF(jx, y_bot), rr, rr)
+
+        # 3) 滑动的横胶囊：最后画，永远压在最上层
+        cap_y = min(h - ch * 0.5, max(ch * 0.5, yn * h))
+        cw2, ch2 = cw * cap_pop, ch * cap_pop
+        rect = QRectF(jx - cw2 * 0.5, cap_y - ch2 * 0.5, cw2, ch2)
+        path = QPainterPath()
+        path.addRoundedRect(rect, ch2 * 0.5, ch2 * 0.5)
+        p.setPen(QPen(outline, ch * 0.16 * outline_w_scale) if outline_on else Qt.NoPen)
+        p.setBrush(QBrush(color))
+        p.drawPath(path)
+
+        # 命中扩散圈（默认关）
+        if hit and k > 0.02 and bool(getattr(js, "db_ring", False)) and st is not None:
+            rad = cw * (0.55 + 0.55 * (1.0 - k))
+            p.setPen(QPen(qc(st.color, 0.5 * k), max(1.0, cw * 0.03)))
+            p.setBrush(Qt.NoBrush)
+            p.drawEllipse(QPointF(jx, cap_y), rad, rad)
+        p.restore()
 
     def _draw_judge_diamond(self, p: QPainter, w: float, h: float, t_ms: float) -> None:
         """常驻的 45° 灰白菱形；音符命中后按该音符颜色闪一下。"""
@@ -436,7 +1129,7 @@ class BarRenderer:
             st = NoteStyle(key=n.type, name=n.type)
         y = self.lane_y(n.lane, h) if n is not None else h * 0.5
         # 判定点大小只由判定点自身设置决定，不能跟着当前音符类型的 size 变。
-        base_r = 0.5 * float(self.rs.note_size) * h
+        base_r = 0.5 * float(self.rs.note_size) * self.content_h(h)
         r = base_r * float(js.idle_scale)
         k = 0.0
         if n is not None and js.flash and 0.0 <= dt <= float(js.flash_ms):
@@ -521,7 +1214,7 @@ class BarRenderer:
                 if n.dur > 0:
                     continue
                 side = self.side_of(n)
-                x = self.judge_x(w) + side * (n.t - t_ms) / 1000.0 * speed
+                x = self.note_x(n.t, t_ms, w, side)
                 y = self.lane_y(n.lane, h)
                 st = th.styles.get(n.type) or th.style(n.type)
                 r = self.note_radius(h, st)

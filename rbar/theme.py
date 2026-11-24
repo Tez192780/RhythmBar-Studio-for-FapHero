@@ -31,6 +31,9 @@ class NoteStyle:
     size: float = 1.0            # 相对 render.note_size 的倍率
     glow: float = 0.0            # 0..1 外发光强度
     image: str = ""              # 自定义图像皮肤；空 = 使用 shape
+    # 哑铃判定点下，这个类型命中时用哪种反馈动画：
+    #   auto = 按 size 自动（大 → B，小 → A）；"A" = 浅下沉（圆点膨胀）；"B" = 深下沉（整体放大+抖动）
+    feedback: str = "auto"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -85,6 +88,7 @@ class JudgeStyle:
     pulse_strength: float = 0.5
     ring: bool = True             # 命中扩散圈
     # --- 常驻判定菱形（参考图里判定点上那枚灰白菱形）
+    mode: str = "diamond"         # diamond（原样式）| dumbbell（哑铃样式，见下方参数）
     idle: bool = True
     idle_color: str = "#e9edf0"   # 常驻颜色（灰白）
     idle_scale: float = 1.06      # 相对音符半径
@@ -92,6 +96,49 @@ class JudgeStyle:
     image: str = ""               # 自定义图像皮肤；空 = 使用 shape
     flash_ms: float = 260.0       # 命中后染色闪烁持续多久
     tint: float = 0.92            # 染色强度 0~1
+    # ---------------------------------------------------------------- 哑铃样式
+    # mode = "dumbbell" 时启用：上下两个圆点 + 细竖杆 + 沿杆上下滑动的横胶囊。
+    # 几何全部以 **Beat 中轴（音符所在的那一行）为原点、相对条高 h** 表达，
+    # 所以哑铃天然上下对称；改条带高度时整体等比缩放。
+    db_color: str = "#e9edf0"     # 哑铃本体颜色（常驻底色，命中时被音符颜色染）
+    db_outline_color: str = ""    # 描边色；空 = 跟随音符类型的描边色
+    db_outline_w: float = 1.0     # 描边宽度倍率（0 = 无描边）
+    db_outline_alpha: float = 1.0  # 描边透明度
+    db_half_len: float = 0.31     # 中轴到上下圆点的距离（= 半个哑铃长度）
+    db_scale: float = 1.0         # 整体缩放（圆点、胶囊、杆宽、长度一起放大）
+    db_circle_r: float = 0.055    # 圆点半径（参考视频约 0.040，实机觉得偏小故默认调大）
+    db_handle_w: float = 0.016    # 竖杆粗细
+    db_capsule_w: float = 0.260   # 胶囊宽（实测 52 / 200）
+    db_capsule_h: float = 0.100   # 胶囊高（实测 20 / 200）
+    db_travel_top: float = 0.85   # 胶囊最高点：中轴往上多少倍 half_len（0.85 → 略低于上圆点）
+    db_top_split: bool = False    # 是否给 A/B/C 三种下沉分别设置最高点
+    db_top_a: float = 0.85        # A 的最高点（倍 half_len）
+    db_top_b: float = 0.85        # B 的最高点
+    db_top_c: float = 0.85        # C 的最高点
+    db_dip_a: float = 0.77        # A 浅下沉：中轴往下多少倍 half_len（1.0 = 下圆点）
+    db_dip_b: float = 1.45        # B 深下沉：穿过下圆点
+    db_dip_c: float = 0.50        # C 微下沉：只轻轻下压一点，无任何命中特效
+    db_rise_frac: float = 0.71    # 一个节拍周期里「上升」占的比例（实测 0.33s / 0.468s）
+    db_fall_ease: float = 0.85    # 下落段缓动指数（<1 = 前段更快）
+    db_pop_scale: float = 1.65    # A：命中瞬间圆点膨胀倍率
+    db_pop_ms: float = 320.0      # A：圆点膨胀的整段时长（一半渐大 + 一半渐小）
+    db_cap_pop: float = 1.16      # 命中瞬间胶囊自身的膨胀倍率（A/B/C 通用，1.0 = 不膨胀）
+    db_cap_pop_split: bool = False  # 是否给 A/B/C 分别设置胶囊膨胀倍率
+    db_cap_pop_a: float = 1.16    # A 的胶囊膨胀倍率（1.0 = 不膨胀）
+    db_cap_pop_b: float = 1.16    # B 的胶囊膨胀倍率
+    db_cap_pop_c: float = 1.16    # C 的胶囊膨胀倍率
+    db_cap_pop_ms: float = 280.0  # 胶囊膨胀的整段时长（一半渐大 + 一半渐小）
+    db_ease_mode: str = "both"    # none = 匀速 | top = 仅最高点缓动 | both = 最高点+最低点都缓动
+    db_ease_strength: float = 0.7  # 缓入缓出的强度 0~1
+    db_shake_scale: float = 1.12  # B：命中瞬间整体放大倍率
+    db_shake_amp: float = 0.025   # B：抖动幅度（相对条高）
+    db_shake_hz: float = 30.0     # B：抖动频率（Hz）
+    db_shake_dur_ms: float = 600.0  # B：抖动持续时间（衰减到 0 的时长）
+    db_shake_ms: float = 320.0    # B：整体放大的整段时长（一半渐大 + 一半渐小）
+    db_tint_ramp_ms: float = 140.0  # 变色渐入：命中前多久开始向该 Beat 的颜色过渡
+    db_idle_gap_ms: float = 1500.0  # 距下一颗音符超过这么久就停止往复，静止在最高点
+    db_idle_glide_ms: float = 400.0  # 进出空闲时，从当前位置平滑滑到目标位置的时长
+    db_ring: bool = False         # 命中扩散圈（参考视频里没有，默认关）
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -99,9 +146,22 @@ class JudgeStyle:
     @staticmethod
     def from_dict(d: dict) -> "JudgeStyle":
         base = JudgeStyle()
-        for k, v in d.items():
+        legacy = "db_top_y" in (d or {})      # 1.1.1 接手初版：绝对 y 坐标、非对称
+        for k, v in (d or {}).items():
             if hasattr(base, k):
                 setattr(base, k, v)
+        if legacy:
+            # 旧参数是「相对条高的绝对 y」且整体偏下，换算成新的「以中轴 0.5 为原点 / half_len」。
+            try:
+                top = float(d.get("db_top_y", 0.2575))
+                bot = float(d.get("db_bottom_y", 0.875))
+                half = max(0.02, (bot - top) / 2.0)
+                base.db_half_len = half
+                base.db_travel_top = max(0.1, (0.5 - float(d.get("db_travel_top", 0.235))) / half)
+                base.db_dip_a = max(0.1, (float(d.get("db_dip_a", 0.74)) - 0.5) / half)
+                base.db_dip_b = max(0.2, (float(d.get("db_dip_b", 0.95)) - 0.5) / half)
+            except (TypeError, ValueError):
+                pass
         return base
 
 
@@ -152,12 +212,83 @@ def default_styles() -> dict[str, NoteStyle]:
 
 
 @dataclass
+class AxisStyle:
+    """横向中轴线：属于基础设置，无论用哪种判定区样式都会画在画面正中。"""
+
+    enabled: bool = True
+    width: float = 0.012          # 线宽，相对条高
+    color: str = "#ffffff"
+    alpha: float = 0.20
+    outline_w: float = 0.0        # 描边宽度（0 = 不描边）
+    outline_color: str = "#141a20"
+    outline_alpha: float = 0.6
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(d: dict) -> "AxisStyle":
+        base = AxisStyle()
+        for k, v in (d or {}).items():
+            if hasattr(base, k):
+                setattr(base, k, v)
+        return base
+
+
+@dataclass
+class FadeSettings:
+    """段落之间的淡入淡出。"""
+
+    enabled: bool = True
+    ms: float = 400.0            # 整段过渡时长（边界前后各一半）
+    scope: str = "judge"         # judge = 仅判定区 | judge_axes = 判定区+横向轴线 | all = 再加音符
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(d: dict) -> "FadeSettings":
+        base = FadeSettings()
+        for k, v in (d or {}).items():
+            if hasattr(base, k):
+                setattr(base, k, v)
+        return base
+
+
+@dataclass
+class JudgeSegment:
+    """一段时间内的判定区配置。end_ms <= start_ms 表示一直到结尾。"""
+
+    start_ms: float = 0.0
+    end_ms: float = 0.0
+    style: JudgeStyle = field(default_factory=JudgeStyle)
+
+    def contains(self, t_ms: float) -> bool:
+        return float(self.start_ms) <= float(t_ms) < float(self.end_ms)
+
+    def to_dict(self) -> dict:
+        return {"start_ms": round(float(self.start_ms), 3),
+                "end_ms": round(float(self.end_ms), 3),
+                "style": self.style.to_dict()}
+
+    @staticmethod
+    def from_dict(d: dict) -> "JudgeSegment":
+        return JudgeSegment(float(d.get("start_ms", 0.0) or 0.0),
+                            float(d.get("end_ms", 0.0) or 0.0),
+                            JudgeStyle.from_dict(d.get("style", {}) or {}))
+
+
+@dataclass
 class Theme:
     styles: dict[str, NoteStyle] = field(default_factory=default_styles)
     order: list[str] = field(default_factory=lambda: ["cyan", "magenta", "gray"])
     plate: PlateStyle = field(default_factory=PlateStyle)
     judge: JudgeStyle = field(default_factory=JudgeStyle)
     ghost: GhostStyle = field(default_factory=GhostStyle)
+    axis: AxisStyle = field(default_factory=AxisStyle)
+    # 判定区分段：为空 = 全程用 judge 这一套
+    segments: list[JudgeSegment] = field(default_factory=list)
+    fade: FadeSettings = field(default_factory=FadeSettings)
 
     # ---------------------------------------------------------------- 便捷访问
     def style(self, key: str) -> NoteStyle:
@@ -181,6 +312,9 @@ class Theme:
             "plate": self.plate.to_dict(),
             "judge": self.judge.to_dict(),
             "ghost": self.ghost.to_dict(),
+            "axis": self.axis.to_dict(),
+            "segments": [s.to_dict() for s in self.segments],
+            "fade": self.fade.to_dict(),
         }
 
     @staticmethod
@@ -195,6 +329,9 @@ class Theme:
         t.plate = PlateStyle.from_dict(d.get("plate", {}))
         t.judge = JudgeStyle.from_dict(d.get("judge", {}))
         t.ghost = GhostStyle.from_dict(d.get("ghost", {}))
+        t.axis = AxisStyle.from_dict(d.get("axis", {}))
+        t.segments = [JudgeSegment.from_dict(x) for x in (d.get("segments") or [])]
+        t.fade = FadeSettings.from_dict(d.get("fade", {}))
         return t
 
     def clone(self) -> "Theme":
