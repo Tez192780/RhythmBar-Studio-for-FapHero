@@ -269,3 +269,10 @@ chmod +x build_app.sh
 ```bash
 xattr -cr /Applications/RhythmBarStudio.app
 ```
+## Related projects
+
+- [Beatbar-Score-Tool]([链接](https://github.com/Cho907INS/Beatbar-Score-Tool)) — 由本仓库维护者开发的、与原项目密切相关的 Beatbar-Score-Tool。
+- 可以计算得出Faphero具体的难度得分和评级。
+  欢迎试用并反馈；如果感兴趣，欢迎 star 或关注。
+  此外也需要更多真实数据来进行模型的参数校准与维护。
+  注：该项目为维护者个人/独立项目，并非原项目官方组成部分。
